@@ -116,6 +116,25 @@ bool SoundSourceYouTubeMusic::downloadToCache(
         return false;
     }
 
+    // Cache hit: reuse an already downloaded file for this video ID.
+    const QDir dir(cacheDir);
+    const QFileInfoList cached = dir.entryInfoList(
+            {videoId + QStringLiteral(".*")},
+            QDir::Files,
+            QDir::Name);
+    for (const QFileInfo& info : cached) {
+        const QString suffix = info.suffix();
+        if (suffix == QStringLiteral("part") || suffix == QStringLiteral("ytdl") ||
+                suffix == QStringLiteral("tmp")) {
+            continue; // skip partial downloads
+        }
+        if (info.fileName().contains(QStringLiteral(".embed."))) {
+            continue; // skip transient tag-embedding temp files
+        }
+        *pFilePath = info.filePath();
+        return true;
+    }
+
     QString exe = QStandardPaths::findExecutable(QStringLiteral("yt-dlp"));
     if (exe.isEmpty()) {
         exe = QStandardPaths::findExecutable(QStringLiteral("yt-dlp.exe"));

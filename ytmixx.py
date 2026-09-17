@@ -290,6 +290,9 @@ def _is_playlist_url(text: str) -> bool:
 
 def playlist_video_ids(identifier: str) -> list:
     """Return the list of video IDs in a playlist/mix."""
+    if not identifier.startswith(("http://", "https://")):
+        # Bare playlist ID (e.g. from `mix list`) -> build a YouTube Music URL.
+        identifier = f"https://music.youtube.com/playlist?list={identifier}"
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -411,6 +414,7 @@ def cmd_mix(args) -> int:
             return 1
         for i, p in enumerate(pls):
             print(f"[{i:2d}] {p['title']}  ({p['count']} pistas)  id={p['id']}")
+        print("\nPara descargar una:  ytmixx.py mix <id>")
         return 0
     infos = mix(args.query, start_deck=args.start_deck, limit=args.limit)
     if not infos:

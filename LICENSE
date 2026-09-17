@@ -1,0 +1,23 @@
+# Licencia
+
+Este proyecto se distribuye bajo la **GNU General Public License v2.0 o
+posterior** (GPL-2.0-or-later).
+
+Motivo: los módulos C++ (`src/library/externaltrackloader.*` y
+`src/sources/soundsourceyoutubemusic.*`) están diseñados para compilarse dentro
+de [Mixxx](https://mixxx.org), que se publica bajo la GPLv2, por lo que son
+obras derivadas y heredan esa licencia. El puente Python (`ytmixx.py`) se
+publica bajo la misma licencia por coherencia.
+
+El texto completo de la licencia está disponible en:
+<https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>
+
+---
+
+### Aviso adicional
+
+Este proyecto usa YouTube Music / YouTube a través de herramientas de terceros
+(`yt-dlp`, `ytmusicapi`) y **no está afiliado ni respaldado por Google/YouTube**.
+Los términos de servicio de YouTube prohíben descargar/extraer audio fuera de su
+app. Úsalo únicamente con contenido del que tengas derecho de descarga y bajo tu
+propia responsabilidad.

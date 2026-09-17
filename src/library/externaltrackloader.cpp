@@ -5,10 +5,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QtGlobal>
 #include <QVector>
 
 #include "mixer/playermanager.h"
 #include "sources/soundsourceproxy.h"
+#include "util/assert.h"
 #include "util/logger.h"
 
 namespace {
