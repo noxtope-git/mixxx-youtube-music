@@ -11,6 +11,7 @@ descargar y cargar pistas y *mixes* de YouTube Music en los decks de Mixxx.
 | `ytmixx.py` | Python | Buscar, descargar y pedir carga de pistas/mixes | No |
 | `src/library/externaltrackloader.{h,cpp}` | C++ | Vigila un archivo JSON y carga la pista en un deck | Sí |
 | `src/sources/soundsourceyoutubemusic.{h,cpp}` | C++ | Decodifica pistas `.ytmusic` de forma perezosa + arrastrar URLs | Sí |
+| `src/library/youtubemusic/youtubemusicfeature.{h,cpp}` | C++ | Buscar YouTube Music desde el buscador de Mixxx | Sí |
 
 > **Aviso legal y técnico.** YouTube Music no tiene API pública oficial para
 > esto y sus términos de servicio prohíben descargar/extraer audio fuera de su
@@ -80,15 +81,20 @@ modificaciones a archivos existentes de Mixxx están en `integration.patch`.
 1. **Copia los archivos C++** a tu árbol de Mixxx:
    ```
    src/library/externaltrackloader.{h,cpp}
+   src/library/youtubemusic/youtubemusicfeature.{h,cpp}
    src/sources/soundsourceyoutubemusic.{h,cpp}
    ```
 2. **Aplica el parche** que modifica `CMakeLists.txt`, `src/sources/soundsourceproxy.cpp`,
-   `src/coreservices.{h,cpp}` y `src/util/dnd.cpp`:
+   `src/coreservices.{h,cpp}`, `src/util/dnd.cpp` y `src/library/library.cpp`:
    ```powershell
    cd <tu-clon-de-mixxx>
    git apply integration.patch
    ```
-3. **Recompila Mixxx** con tu flujo habitual (Qt 6 + vcpkg).
+3. **Recompila Mixxx**. En Windows puedes usar el script incluido:
+   ```powershell
+   tools\build-youtube.bat
+   ```
+   (requiere Visual Studio 2022 Build Tools, CMake y Ninja; ver comentarios del script).
 
 ### Qué aporta cada pieza
 
@@ -106,6 +112,12 @@ modificaciones a archivos existentes de Mixxx están en `integration.patch`.
 - **Arrastrar y soltar URLs**: con el parche aplicado, puedes **arrastrar un
   enlace de YouTube / YouTube Music y soltarlo directamente en un deck**; Mixxx
   crea el *sidecar* y lo carga de forma perezosa (`src/util/dnd.cpp`).
+
+- **Buscar desde el buscador de Mixxx**: el `YouTubeMusicFeature` añade una
+  entrada "YouTube Music" en la barra lateral de la biblioteca. Al escribir en
+  el buscador, consulta YouTube Music (vía `yt-dlp`) y muestra los resultados;
+  al cargar un resultado se crea el *sidecar* `.ytmusic` y se descarga al
+  reproducir.
 
 ---
 
