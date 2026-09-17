@@ -1,0 +1,580 @@
+﻿#!/usr/bin/env python3
+"""
+ytmixx — YouTube Music bridge for Mixxx.
+
+Search YouTube Music, download tracks to a local cache, and load them into a
+Mixxx deck automatically (requires the optional C++ `ExternalTrackLoader`
+module, or you can load the downloaded files manually from the library).
+
+Commands:
+    search  <query>            List matching tracks.
+    get     <query|url|id>     Download a track and print its local path.
+    load    <query|url|id>     Download + send a load command to Mixxx.
+    mix     <url|id>           Download a playlist/mix and load it into decks.
+    mix     list               List your YouTube Music playlists (needs auth).
+    serve   [--port N]         Start a tiny local web UI (search + load).
+    cache   [--clear]          Show or clear the download cache.
+
+Examples:
+    python ytmixx.py search "daft punk around the world"
+    python ytmixx.py load "daft punk around the world" --deck 1 --autoplay
+    python ytmixx.py get "https://music.youtube.com/watch?v=dQw4w9WgXcQ"
+    python ytmixx.py mix "https://music.youtube.com/playlist?list=PL..." --start-deck 1
+    python ytmixx.py serve --port 8765
+
+Options (available before or after the subcommand):
+    --command-file PATH   Override the load-command JSON path.
+    YTMIXX_CACHE_DIR      Override the download cache directory.
+    YTMIXX_COMMAND_FILE   Override the load-command JSON path.
+
+Disclaimer: only use with content you have the rights to download. YouTube
+Music has no official API for this and may change at any time.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Optional
+from urllib.parse import parse_qs, urlparse
+
+try:
+    import yt_dlp
+except ImportError:
+    sys.exit("Falta yt-dlp. Instalalo con:  python -m pip install yt-dlp")
+
+# Optional: nicer search results straight from YouTube Music.
+try:
+    from ytmusicapi import YTMusic
+except Exception:  # pragma: no cover - optional dependency
+    YTMusic = None
+
+
+# --------------------------------------------------------------------------- #
+# Paths / config
+# --------------------------------------------------------------------------- #
+
+def _default_cache_dir() -> Path:
+    env = os.environ.get("YTMIXX_CACHE_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / "Music" / "Mixxx" / "YouTube Music"
+
+
+def _default_command_file() -> Path:
+    env = os.environ.get("YTMIXX_COMMAND_FILE")
+    if env:
+        return Path(env).expanduser()
+    home = Path.home()
+    if sys.platform == "win32":
+        localappdata = os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local"))
+        return Path(localappdata) / "Mixxx" / "youtube_load.json"
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "Mixxx" / "youtube_load.json"
+    return home / ".mixxx" / "youtube_load.json"
+
+
+CACHE_DIR = _default_cache_dir()
+COMMAND_FILE = _default_command_file()
+
+# A YouTube video ID is exactly 11 chars of [A-Za-z0-9_-].
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+_URL_ID_RE = re.compile(
+    r"(?:youtube\.com|youtu\.be|music\.youtube\.com)/.*[?&]v=([A-Za-z0-9_-]{11})"
+)
+
+
+def _extract_id(text: str) -> Optional[str]:
+    """Return a bare video ID if `text` looks like one or a YouTube URL."""
+    m = _URL_ID_RE.search(text)
+    if m:
+        return m.group(1)
+    if re.fullmatch(_ID_RE, text):
+        return text
+    return None
+
+
+def _sanitize(name: str) -> str:
+    """Make a string safe for use in a filename."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip().strip(".")
+    return name[:160] or "unknown"
+
+
+def _cache_dir() -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR
+
+
+# --------------------------------------------------------------------------- #
+# Search
+# --------------------------------------------------------------------------- #
+
+def _search_ytmusic(query: str, limit: int) -> list:
+    """Search using ytmusicapi (needs auth: `ytmusicapi oauth`)."""
+    if YTMusic is None:
+        return []
+    try:
+        yt = YTMusic()
+        raw = yt.search(query, filter="songs", limit=limit)
+    except Exception:
+        return []
+    out = []
+    for item in raw:
+        vid = item.get("videoId")
+        if not vid:
+            continue
+        artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
+        out.append({
+            "id": vid,
+            "title": item.get("title") or "Unknown",
+            "artist": artists,
+            "duration": item.get("duration"),
+        })
+    return out
+
+
+def _search_ytdlp(query: str, limit: int) -> list:
+    """Fallback search using yt-dlp (regular YouTube search)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+    entries = info.get("entries") or []
+    out = []
+    for e in entries:
+        if not e:
+            continue
+        out.append({
+            "id": e.get("id"),
+            "title": e.get("title") or "Unknown",
+            "artist": e.get("channel") or e.get("uploader") or "",
+            "duration": e.get("duration"),
+        })
+    return out
+
+
+def search(query: str, limit: int = 10) -> list:
+    results = _search_ytmusic(query, limit)
+    if not results:
+        results = _search_ytdlp(query, limit)
+    return results[:limit]
+
+
+# --------------------------------------------------------------------------- #
+# Download
+# --------------------------------------------------------------------------- #
+
+def _embed_tags(path: Path, title: str, artist: str) -> None:
+    """Best-effort: embed title/artist tags using ffmpeg (in place, no re-encode)."""
+    if not shutil.which("ffmpeg"):
+        return
+    # Keep the original extension on the temp file so ffmpeg can pick a muxer.
+    tmp = path.with_name(path.stem + ".embed" + path.suffix)
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(path), "-map", "0", "-c", "copy",
+        "-metadata", f"title={title}",
+        "-metadata", f"artist={artist}",
+        str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=120)
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+
+
+def download(identifier: str, embed: bool = True) -> Optional[dict]:
+    """Download audio for `identifier` (query / URL / ID) and return info."""
+    cache = _cache_dir()
+    # If it's not a URL or bare video ID, treat it as a search query and
+    # download the top result.
+    target = identifier if _extract_id(identifier) else f"ytsearch1:{identifier}"
+    opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": str(cache / "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "paths": {"home": str(cache)},
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target, download=True)
+            if info.get("_type") == "playlist":
+                entries = info.get("entries") or []
+                info = entries[0] if entries else {}
+            path = Path(ydl.prepare_filename(info))
+    except yt_dlp.utils.DownloadError as e:
+        print(f"Error de descarga: {e}", file=sys.stderr)
+        return None
+    if not path.exists():
+        # ext may have differed (e.g. webm fallback) -> glob by id.
+        matches = list(cache.glob(f"{info.get('id', '*')}.*"))
+        path = matches[0] if matches else None
+    if not path:
+        return None
+    title = info.get("title") or path.stem
+    artist = (info.get("artist") or info.get("uploader") or info.get("channel") or "")
+    if embed:
+        _embed_tags(path, title, artist)
+    return {
+        "id": info.get("id"),
+        "title": title,
+        "artist": artist,
+        "path": str(path),
+        "duration": info.get("duration"),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Load command (ExternalTrackLoader)
+# --------------------------------------------------------------------------- #
+
+def _deck_group(deck: int) -> str:
+    return f"[Channel{max(1, deck)}]"
+
+
+def write_load_command(path: str, deck: int = 1, autoplay: bool = False,
+                       group: Optional[str] = None,
+                       command_file: Optional[Path] = None) -> Path:
+    """Write the command JSON consumed by Mixxx's ExternalTrackLoader."""
+    cf = command_file or COMMAND_FILE
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "path": str(path),
+        "group": group or _deck_group(deck),
+        "autoplay": bool(autoplay),
+    }
+    # Atomic write (temp + replace) so the watcher never sees a partial file.
+    fd, tmp = tempfile.mkstemp(dir=str(cf.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, cf)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return cf
+
+
+def load(identifier: str, deck: int = 1, autoplay: bool = False) -> Optional[dict]:
+    info = download(identifier)
+    if not info:
+        return None
+    write_load_command(info["path"], deck=deck, autoplay=autoplay)
+    return info
+
+
+# --------------------------------------------------------------------------- #
+# Playlists / mixes
+# --------------------------------------------------------------------------- #
+
+def _is_playlist_url(text: str) -> bool:
+    return "list=" in text or "/playlist?" in text or "/sets/" in text
+
+
+def playlist_video_ids(identifier: str) -> list:
+    """Return the list of video IDs in a playlist/mix."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(identifier, download=False)
+    entries = info.get("entries") or []
+    return [e.get("id") for e in entries if e and e.get("id")]
+
+
+def list_personal_playlists(limit: int = 50) -> list:
+    """List the user's YouTube Music playlists (requires `ytmusicapi oauth`)."""
+    if YTMusic is None:
+        return []
+    try:
+        yt = YTMusic()
+        raw = yt.get_library_playlists(limit=limit)
+    except Exception:
+        return []
+    return [{
+        "id": p.get("playlistId"),
+        "title": p.get("title") or "Unknown",
+        "count": p.get("count") or p.get("trackCount"),
+    } for p in raw if p.get("playlistId")]
+
+
+def write_tracks_command(tracks: list, command_file: Optional[Path] = None) -> Path:
+    """Write a multi-track command JSON (loads into successive decks)."""
+    cf = command_file or COMMAND_FILE
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "tracks": tracks}
+    fd, tmp = tempfile.mkstemp(dir=str(cf.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, cf)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return cf
+
+
+def mix(identifier: str, start_deck: int = 1, limit: int = 0) -> Optional[list]:
+    """Download every track of a playlist/mix and queue them into decks."""
+    ids = playlist_video_ids(identifier)
+    if limit > 0:
+        ids = ids[:limit]
+    if not ids:
+        return None
+    tracks = []
+    infos = []
+    for i, vid in enumerate(ids):
+        info = download(vid)
+        if not info:
+            continue
+        tracks.append({"path": info["path"], "group": _deck_group(start_deck + i)})
+        infos.append(info)
+    if tracks:
+        write_tracks_command(tracks)
+    return infos
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def _print_results(results: list) -> None:
+    for i, r in enumerate(results):
+        dur = r.get("duration")
+        dur_s = f"{dur // 60}:{dur % 60:02d}" if isinstance(dur, int) else "?:??"
+        print(f"[{i:2d}] {r['title']}  -  {r['artist']}  ({dur_s})  id={r['id']}")
+
+
+def _fmt_dur(seconds) -> str:
+    if not isinstance(seconds, int):
+        return "?:??"
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def cmd_search(args) -> int:
+    results = search(args.query, args.limit)
+    if not results:
+        print("Sin resultados.")
+        return 1
+    _print_results(results)
+    return 0
+
+
+def cmd_get(args) -> int:
+    info = download(args.query, embed=not args.no_embed)
+    if not info:
+        print("Error al descargar.", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        print(info["path"])
+    return 0
+
+
+def cmd_load(args) -> int:
+    info = load(args.query, deck=args.deck, autoplay=args.autoplay)
+    if not info:
+        print("Error al descargar.", file=sys.stderr)
+        return 1
+    print(f"Cargado en {_deck_group(args.deck)}: {info['title']} - {info['artist']}")
+    print(f"  archivo: {info['path']}")
+    print(f"  comando: {COMMAND_FILE}")
+    return 0
+
+
+def cmd_mix(args) -> int:
+    if args.query == "list":
+        pls = list_personal_playlists()
+        if not pls:
+            print("Sin playlists (ejecuta 'ytmusicapi oauth' para autenticarte).")
+            return 1
+        for i, p in enumerate(pls):
+            print(f"[{i:2d}] {p['title']}  ({p['count']} pistas)  id={p['id']}")
+        return 0
+    infos = mix(args.query, start_deck=args.start_deck, limit=args.limit)
+    if not infos:
+        print("No se pudo descargar la playlist/mix.", file=sys.stderr)
+        return 1
+    n = len(infos)
+    print(f"Mix descargado: {n} pistas -> decks {args.start_deck}..{args.start_deck + n - 1}")
+    for i, info in enumerate(infos):
+        print(f"  {_deck_group(args.start_deck + i)}: {info['title']} - {info['artist']}")
+    print(f"  comando: {COMMAND_FILE}")
+    return 0
+
+
+def cmd_cache(args) -> int:
+    cache = _cache_dir()
+    files = list(cache.glob("*"))
+    total = sum(f.stat().st_size for f in files if f.is_file())
+    if args.clear:
+        for f in files:
+            if f.is_file():
+                f.unlink()
+        print(f"Cache limpiada ({len(files)} archivos).")
+        return 0
+    print(f"Cache: {cache}")
+    print(f"{len(files)} archivos, {total / 1_048_576:.1f} MB")
+    for f in sorted(files):
+        if f.is_file():
+            print(f"  {f.name}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Minimal local web UI (serve)
+# --------------------------------------------------------------------------- #
+
+_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>ytmixx</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
+input,button{font-size:1rem;padding:.5rem}input{width:70%}button{width:25%;background:#f90;border:0;color:#111;cursor:pointer}
+.result{display:flex;justify-content:space-between;align-items:center;padding:.5rem;border-bottom:1px solid #333}
+.result .meta{flex:1}.result button{margin-left:1rem;width:auto}
+a{color:#f90}</style></head>
+<body><h1>ytmixx &mdash; YouTube Music</h1>
+<input id="q" placeholder="Buscar..."><button onclick="doSearch()">Buscar</button>
+<div id="out"></div>
+<script>
+async function doSearch(){
+  const q=document.getElementById('q').value;const o=document.getElementById('out');
+  o.innerHTML='Buscando...';
+  const r=await fetch('/search?q='+encodeURIComponent(q));const j=await r.json();
+  o.innerHTML=j.map((x,i)=>`<div class="result"><div class="meta"><b>${x.title}</b><br><small>${x.artist} (${x.duration})</small></div>
+    <button onclick="doLoad(${i},'${x.id}')">Cargar deck 1</button></div>`).join('')||'Sin resultados';
+}
+async function doLoad(i,id){const o=document.getElementById('out');
+  const r=await fetch('/load?q='+encodeURIComponent(id));const j=await r.json();
+  o.insertAdjacentHTML('afterbegin',`<div style="color:#0f0">OK: ${j.title} - ${j.artist}</div>`);}
+</script></body></html>"""
+
+
+class _Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # quiet
+        pass
+
+    def _json(self, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            body = _HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/search":
+            q = parse_qs(parsed.query).get("q", [""])[0]
+            self._json([{
+                "id": r["id"], "title": r["title"], "artist": r["artist"],
+                "duration": _fmt_dur(r.get("duration")),
+            } for r in search(q)])
+        elif parsed.path == "/load":
+            q = parse_qs(parsed.query).get("q", [""])[0]
+            info = load(q, deck=1, autoplay=False)
+            self._json(info or {"error": "download failed"})
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+
+def cmd_serve(args) -> int:
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
+    url = f"http://127.0.0.1:{args.port}"
+    print(f"ytmixx UI: {url}")
+    print("Abre esa URL en tu navegador. Ctrl+C para salir.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="ytmixx", description="YouTube Music bridge for Mixxx")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--command-file", type=Path, default=None,
+                        help="Ruta del archivo de comandos JSON (default: YTMIXX_COMMAND_FILE)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("search", parents=[common], help="Buscar pistas")
+    sp.add_argument("query")
+    sp.add_argument("--limit", type=int, default=10)
+    sp.set_defaults(func=cmd_search)
+
+    gp = sub.add_parser("get", parents=[common], help="Descargar y mostrar la ruta local")
+    gp.add_argument("query")
+    gp.add_argument("--json", action="store_true")
+    gp.add_argument("--no-embed", action="store_true", help="No incrustar etiquetas ID3")
+    gp.set_defaults(func=cmd_get)
+
+    lp = sub.add_parser("load", parents=[common], help="Descargar y cargar en un deck")
+    lp.add_argument("query")
+    lp.add_argument("--deck", type=int, default=1)
+    lp.add_argument("--autoplay", action="store_true")
+    lp.set_defaults(func=cmd_load)
+
+    mp = sub.add_parser("mix", parents=[common], help="Descargar y cargar una playlist/mix (o 'list')")
+    mp.add_argument("query")
+    mp.add_argument("--start-deck", type=int, default=1)
+    mp.add_argument("--limit", type=int, default=0, help="Max pistas (0 = todas)")
+    mp.set_defaults(func=cmd_mix)
+
+    cp = sub.add_parser("cache", parents=[common], help="Ver o limpiar la cache")
+    cp.add_argument("--clear", action="store_true")
+    cp.set_defaults(func=cmd_cache)
+
+    sv = sub.add_parser("serve", parents=[common], help="Interfaz web local")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.set_defaults(func=cmd_serve)
+
+    return p
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    global COMMAND_FILE
+    if args.command_file:
+        COMMAND_FILE = args.command_file
+
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
