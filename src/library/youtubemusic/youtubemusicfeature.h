@@ -1,14 +1,13 @@
 #pragma once
 
+#include <QProcess>
 #include <QTimer>
 
 #include "library/baseexternallibraryfeature.h"
+#include "library/baseexternaltrackmodel.h"
 #include "util/parented_ptr.h"
 
-class BaseExternalTrackModel;
 class BaseTrackCache;
-class QProcess;
-class TreeItem;
 
 // A track model backed by the "youtube_music_library" temporary SQL table.
 // Overrides `search()` so that typing in Mixxx's library search box triggers a

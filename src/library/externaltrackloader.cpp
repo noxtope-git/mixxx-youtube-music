@@ -165,3 +165,5 @@ void ExternalTrackLoader::processCommandFile() {
 }
 
 } // namespace mixxx
+
+#include "moc_externaltrackloader.cpp"

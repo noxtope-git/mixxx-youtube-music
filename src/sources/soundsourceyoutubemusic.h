@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sources/soundsource.h"
+#include "sources/soundsourceprovider.h"
 
 namespace mixxx {
 

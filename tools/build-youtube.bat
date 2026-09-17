@@ -1,53 +1,71 @@
 @ECHO OFF
 REM ============================================================================
-REM  build-youtube.bat - Compila Mixxx con la integración de YouTube Music.
+REM  build-youtube.bat - Compila Mixxx con la integracion de YouTube Music.
 REM
-REM  Requisitos previos (una sola vez, necesita permisos de administrador):
-REM    1) Visual Studio 2022 Build Tools (C++ workload):
-REM         winget install --id Microsoft.VisualStudio.2022.BuildTools -e ^
-REM           --override "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
-REM                        --add Microsoft.VisualStudio.Component.Windows11SDK.22000"
-REM    2) CMake y Ninja:
-REM         winget install Kitware.CMake -e
-REM         winget install Ninja-build.Ninja -e
+REM  Requisitos (una sola vez):
+REM    1) Visual Studio 2022 Build Tools (C++ workload + Windows SDK):
+REM         winget install --id Microsoft.VisualStudio.2022.BuildTools -e
+REM    2) CMake:  winget install Kitware.CMake -e
+REM    3) Ninja:  winget install Ninja-build.Ninja -e
 REM
 REM  Uso:  tools\build-youtube.bat
 REM  Resultado:  build\mixxx.exe
 REM ============================================================================
-SETLOCAL ENABLEEXTENSIONS
+SETLOCAL ENABLEEXTENSIONS ENABLEDELAYEDEXPANSION
 
 SET "ROOT=%~dp0.."
 SET "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-SET "MSVC_FOUND="
+SET "VSINSTALL="
 
-REM 1) Buscar MSVC
+REM 1) Buscar Visual Studio (MSVC)
 IF EXIST "%VSWHERE%" (
-    FOR /F "usebackq tokens=*" %%i IN (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) DO SET "MSVC_FOUND=%%i"
+    FOR /F "usebackq tokens=*" %%i IN (`"%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) DO SET "VSINSTALL=%%i"
 )
-IF NOT DEFINED MSVC_FOUND (
-    ECHO [ERROR] Visual Studio Build Tools ^(C++^) no encontrado.
+IF NOT DEFINED VSINSTALL (
+    ECHO [ERROR] No se encontro Visual Studio con herramientas de C++.
     ECHO          Instalalo como administrador:
     ECHO            winget install --id Microsoft.VisualStudio.2022.BuildTools -e
     EXIT /B 1
 )
-ECHO [OK] MSVC: %MSVC_FOUND%
 
-REM 2) Verificar CMake y Ninja
+SET "VCVARS=%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+IF NOT EXIST "%VCVARS%" (
+    ECHO [ERROR] No se encontro vcvars64.bat en %VSINSTALL%
+    EXIT /B 1
+)
+CALL "%VCVARS%" || EXIT /B 1
+ECHO [OK] MSVC: %VSINSTALL%
+
+REM 2) Buscar CMake y Ninja (instalados con winget)
+SET "WINGET=%LOCALAPPDATA%\Microsoft\WinGet\Packages"
+SET "CMAKEDIR="
+FOR /F "delims=" %%f IN ('where /r "%WINGET%" cmake.exe 2^>nul') DO (
+    IF NOT DEFINED CMAKEDIR SET "CMAKEDIR=%%~dpf"
+)
+SET "NINJADIR="
+FOR /F "delims=" %%f IN ('where /r "%WINGET%" ninja.exe 2^>nul') DO (
+    IF NOT DEFINED NINJADIR SET "NINJADIR=%%~dpf"
+)
 WHERE cmake >NUL 2>NUL
 IF ERRORLEVEL 1 (
-    ECHO [ERROR] CMake no encontrado. Instala: winget install Kitware.CMake -e
-    EXIT /B 1
+    IF NOT DEFINED CMAKEDIR (
+        ECHO [ERROR] CMake no encontrado. Instala: winget install Kitware.CMake -e
+        EXIT /B 1
+    )
+    SET "PATH=!CMAKEDIR!;%PATH%"
 )
 WHERE ninja >NUL 2>NUL
 IF ERRORLEVEL 1 (
-    ECHO [ERROR] Ninja no encontrado. Instala: winget install Ninja-build.Ninja -e
-    EXIT /B 1
+    IF NOT DEFINED NINJADIR (
+        ECHO [ERROR] Ninja no encontrado. Instala: winget install Ninja-build.Ninja -e
+        EXIT /B 1
+    )
+    SET "PATH=!NINJADIR!;%PATH%"
 )
 ECHO [OK] CMake y Ninja presentes.
 
-REM 3) Configurar el entorno de dependencias precompiladas (~2.5 GB, una sola vez).
-REM    Esto define MIXXX_VCPKG_ROOT, CMAKE_GENERATOR=Ninja, etc.
-CALL "%~dp0windows_buildenv.bat" setup
+REM 3) Configurar el entorno de dependencias precompiladas (~2.5 GB, una sola vez)
+CALL "%ROOT%\tools\windows_buildenv.bat" setup
 IF ERRORLEVEL 1 (
     ECHO [ERROR] Fallo al configurar el build environment.
     EXIT /B 1

@@ -11,6 +11,7 @@
 #include "library/basetrackcache.h"
 #include "library/baseexternaltrackmodel.h"
 #include "library/library.h"
+#include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
 #include "library/treeitemmodel.h"
@@ -238,3 +239,5 @@ void YouTubeMusicFeature::createLibraryTable() {
         kLogger.warning() << "Failed to create YouTube Music table";
     }
 }
+
+#include "moc_youtubemusicfeature.cpp"
