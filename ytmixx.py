@@ -113,6 +113,31 @@ def _cache_dir() -> Path:
     return CACHE_DIR
 
 
+def is_mixxx_running() -> bool:
+    """Return True if Mixxx is currently running.
+
+    Loading a track into a deck requires Mixxx to be open (the
+    ExternalTrackLoader module inside Mixxx watches the command file).
+    If it isn't running the command would be silently lost or stale.
+    """
+    if sys.platform == "win32":
+        try:
+            r = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq mixxx.exe", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5)
+            return r.returncode == 0 and "mixxx.exe" in r.stdout.lower()
+        except Exception:
+            return False
+    try:
+        r = subprocess.run(
+                ["pgrep", "-x", "mixxx"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # Search
 # --------------------------------------------------------------------------- #
@@ -423,6 +448,9 @@ def cmd_get(args) -> int:
 
 
 def cmd_load(args) -> int:
+    if not is_mixxx_running():
+        print("Error: Mixxx no esta abierto. Abre Mixxx antes de cargar pistas.", file=sys.stderr)
+        return 1
     info = load(args.query, deck=args.deck, autoplay=args.autoplay)
     if not info:
         print("Error al descargar.", file=sys.stderr)
@@ -443,6 +471,9 @@ def cmd_mix(args) -> int:
             print(f"[{i:2d}] {p['title']}  ({p['count']} pistas)  id={p['id']}")
         print("\nPara descargar una:  ytmixx.py mix <id>")
         return 0
+    if not is_mixxx_running():
+        print("Error: Mixxx no esta abierto. Abre Mixxx antes de cargar pistas.", file=sys.stderr)
+        return 1
     infos = mix(args.query, start_deck=args.start_deck, limit=args.limit)
     if not infos:
         print("No se pudo descargar la playlist/mix.", file=sys.stderr)
@@ -537,7 +568,7 @@ async function doMix(){
 async function doLoad(id,deck){
   const o=document.getElementById('out');
   const r=await fetch('/load?q='+encodeURIComponent(id)+'&deck='+deck);const j=await r.json();
-  if(j.error){o.insertAdjacentHTML('afterbegin','<div class="msg err">Error al descargar</div>');return;}
+  if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
   o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}: ${esc(j.title)} - ${esc(j.artist)}</div>`);
 }
 </script></body></html>"""
@@ -579,6 +610,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/load":
             q = parse_qs(parsed.query).get("q", [""])[0]
             deck = int(parse_qs(parsed.query).get("deck", ["1"])[0])
+            if not is_mixxx_running():
+                self._json({"error": "Mixxx no esta abierto"})
+                return
             info = load(q, deck=deck, autoplay=False)
             self._json(info or {"error": "download failed"})
         else:
