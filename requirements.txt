@@ -1,2 +1,4 @@
 yt-dlp>=2024.1.0
 ytmusicapi>=1.0.0
+
+numpy

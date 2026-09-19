@@ -138,6 +138,106 @@ def is_mixxx_running() -> bool:
         return False
 
 
+def _thumbnail_url(video_id: str) -> str:
+    return f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
+
+
+# --- BPM detection + cache ----------------------------------------------------
+
+_bpm_cache: Optional[dict] = None
+
+
+def _bpm_cache_path() -> Path:
+    return _cache_dir() / "bpm_cache.json"
+
+
+def _get_bpm_cache() -> dict:
+    global _bpm_cache
+    if _bpm_cache is None:
+        p = _bpm_cache_path()
+        if p.exists():
+            try:
+                _bpm_cache = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                _bpm_cache = {}
+        else:
+            _bpm_cache = {}
+    return _bpm_cache
+
+
+def _save_bpm_cache() -> None:
+    try:
+        _bpm_cache_path().write_text(json.dumps(_get_bpm_cache()), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def get_cached_bpm(video_id: str) -> Optional[float]:
+    return _get_bpm_cache().get(video_id)
+
+
+def set_cached_bpm(video_id: str, bpm: Optional[float]) -> None:
+    if bpm is None:
+        return
+    _get_bpm_cache()[video_id] = bpm
+    _save_bpm_cache()
+
+
+def _detect_bpm(path: Path) -> Optional[float]:
+    """Estimate BPM from the first minute of audio via onset autocorrelation."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not shutil.which("ffmpeg"):
+        return None
+    try:
+        proc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(path),
+                 "-f", "f32le", "-ac", "1", "-ar", "22050", "-t", "60", "-"],
+                capture_output=True,
+                timeout=120)
+    except Exception:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        samples = np.frombuffer(proc.stdout, dtype=np.float32)
+    except Exception:
+        return None
+    sr = 22050
+    hop = 1024
+    n = (samples.size // hop) * hop
+    if n < sr * 5:  # need at least ~5 seconds of audio
+        return None
+    frames = samples[:n].reshape(-1, hop)
+    energy = (frames * frames).mean(axis=1)
+    onset = np.diff(energy)
+    onset[onset < 0] = 0
+    if onset.sum() == 0:
+        return None
+    onset = onset - onset.mean()
+    corr = np.correlate(onset, onset, mode="full")
+    corr = corr[corr.size // 2:]
+    frame_rate = sr / hop
+    lo = int(frame_rate * 60 / 200)  # 200 BPM (shortest period)
+    hi = int(frame_rate * 60 / 60)   # 60 BPM (longest period)
+    if hi >= corr.size:
+        hi = corr.size - 1
+    if lo >= hi:
+        return None
+    best = lo + int(np.argmax(corr[lo:hi]))
+    if best <= 0:
+        return None
+    bpm = frame_rate * 60 / best
+    # Collapse common half/double-tempo errors into a sane range.
+    while bpm > 190:
+        bpm /= 2
+    while bpm < 65:
+        bpm *= 2
+    return round(float(bpm), 1)
+
+
 # --------------------------------------------------------------------------- #
 # Search
 # --------------------------------------------------------------------------- #
@@ -256,12 +356,19 @@ def download(identifier: str, embed: bool = True) -> Optional[dict]:
     artist = (info.get("artist") or info.get("uploader") or info.get("channel") or "")
     if embed:
         _embed_tags(path, title, artist)
+    video_id = info.get("id") or ""
+    bpm = get_cached_bpm(video_id)
+    if bpm is None:
+        bpm = _detect_bpm(path)
+        set_cached_bpm(video_id, bpm)
     return {
-        "id": info.get("id"),
+        "id": video_id,
         "title": title,
         "artist": artist,
         "path": str(path),
         "duration": info.get("duration"),
+        "bpm": bpm,
+        "thumbnail": _thumbnail_url(video_id),
     }
 
 
@@ -520,17 +627,33 @@ input{width:100%;box-sizing:border-box;background:#222;color:#eee;margin:.3rem 0
 .box{display:flex;gap:.4rem;margin:.3rem 0}.box button{white-space:nowrap}
 h3{color:#f90;margin:.5rem 0}
 .result{display:flex;justify-content:space-between;align-items:center;padding:.5rem;border-bottom:1px solid #333;gap:.5rem}
+.result .thumb{width:64px;height:64px;object-fit:cover;border-radius:4px;flex:0 0 64px}
 .result .meta{flex:1;min-width:0}
 .result .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.result .meta small{color:#aaa}
+.result .bpm{display:inline-block;margin-top:3px;padding:1px 6px;border-radius:3px;background:#333;color:#9cf;font-size:.8rem;font-weight:bold}
+.result .bpm.none{color:#666}
 .result .actions{display:flex;gap:.3rem}
 .result .actions button{padding:.35rem .6rem}
 .msg{padding:.5rem;margin:.3rem 0}.ok{color:#0f0}.err{color:#f66}
+.filter{display:flex;gap:.4rem;margin:.5rem 0;align-items:center}
+.filter input{width:80px;margin:0}
+.filter label{color:#aaa;font-size:.85rem}
 </style></head>
 <body>
 <h1>ytmixx &mdash; YouTube Music</h1>
 
 <input id="q" placeholder="Busca una cancion o pega la URL de un mix/playlist..." onkeydown="if(event.key==='Enter')doGo()">
 <div class="box"><button class="btn" onclick="doGo()">Buscar</button></div>
+
+<div class="filter">
+  <label>BPM:</label>
+  <input id="bpmMin" type="number" placeholder="min">
+  <label>-</label>
+  <input id="bpmMax" type="number" placeholder="max">
+  <button class="btn" onclick="doFilter()">Filtrar</button>
+  <button class="btn" onclick="clearFilter()">Limpiar</button>
+</div>
 
 <div id="out"></div>
 
@@ -545,7 +668,11 @@ function isMix(q){
   return false;
 }
 function row(x){
-  return `<div class="result"><div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small></div>
+  const bpm=x.bpm?Math.round(x.bpm):null;
+  const badge=bpm?`<span class="bpm">${bpm} BPM</span>`:'<span class="bpm none">- BPM</span>';
+  return `<div class="result" data-bpm="${bpm??''}">
+    <img class="thumb" src="${esc(x.thumbnail||'')}" alt="">
+    <div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small>${badge}</div>
     <div class="actions"><button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
     <button class="deck2" onclick="doLoad('${esc(x.id)}',2)">Deck 2</button></div></div>`;
 }
@@ -553,6 +680,21 @@ function render(j,label){
   const o=document.getElementById('out');
   if(!Array.isArray(j)||j.length===0){o.innerHTML='<div class="msg err">Sin resultados</div>';return;}
   o.innerHTML=`<h3>${label} (${j.length})</h3>`+j.map(row).join('');
+  applyFilter();
+}
+function applyFilter(){
+  const min=parseFloat(document.getElementById('bpmMin').value)||0;
+  const max=parseFloat(document.getElementById('bpmMax').value)||999;
+  document.querySelectorAll('#out .result').forEach(el=>{
+    const b=parseFloat(el.dataset.bpm);
+    el.style.display=(!isNaN(b)&&b>=min&&b<=max)?'':'none';
+  });
+}
+function doFilter(){applyFilter();}
+function clearFilter(){
+  document.getElementById('bpmMin').value='';
+  document.getElementById('bpmMax').value='';
+  applyFilter();
 }
 async function doGo(){
   const q=document.getElementById('q').value;const o=document.getElementById('out');
@@ -597,12 +739,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._json([{
                 "id": r["id"], "title": r["title"], "artist": r["artist"],
                 "duration": _fmt_dur(r.get("duration")),
+                "bpm": get_cached_bpm(r["id"]),
+                "thumbnail": _thumbnail_url(r["id"]),
             } for r in search(q)])
         elif parsed.path == "/mix":
             q = parse_qs(parsed.query).get("q", [""])[0]
             self._json([{
                 "id": r["id"], "title": r["title"], "artist": r["artist"],
                 "duration": _fmt_dur(r.get("duration")),
+                "bpm": get_cached_bpm(r["id"]),
+                "thumbnail": _thumbnail_url(r["id"]),
             } for r in mix_tracks(q, limit=100)])
         elif parsed.path == "/load":
             q = parse_qs(parsed.query).get("q", [""])[0]
