@@ -529,20 +529,21 @@ h3{color:#f90;margin:.5rem 0}
 <body>
 <h1>ytmixx &mdash; YouTube Music</h1>
 
-<div>
-<input id="q" placeholder="Buscar cancion...">
-<div class="box"><button class="btn" onclick="doSearch()">Buscar</button></div>
-</div>
-
-<div>
-<input id="mixurl" placeholder="URL de mix/playlist de YouTube (music.youtube.com/playlist?list=...)">
-<div class="box"><button class="btn" onclick="doMix()">Listar canciones del mix</button></div>
-</div>
+<input id="q" placeholder="Busca una cancion o pega la URL de un mix/playlist..." onkeydown="if(event.key==='Enter')doGo()">
+<div class="box"><button class="btn" onclick="doGo()">Buscar</button></div>
 
 <div id="out"></div>
 
 <script>
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function isMix(q){
+  q=q.trim();
+  if(!q)return false;
+  if(/^https?:\/\//i.test(q)&&/youtube|youtu\.be/i.test(q))return true;
+  if(/list=/.test(q))return true;
+  if(/^(PL|RD|OLAK|UU|FL|AA|LL)[A-Za-z0-9_-]{5,}/.test(q))return true;
+  return false;
+}
 function row(x){
   return `<div class="result"><div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small></div>
     <div class="actions"><button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
@@ -553,17 +554,13 @@ function render(j,label){
   if(!Array.isArray(j)||j.length===0){o.innerHTML='<div class="msg err">Sin resultados</div>';return;}
   o.innerHTML=`<h3>${label} (${j.length})</h3>`+j.map(row).join('');
 }
-async function doSearch(){
+async function doGo(){
   const q=document.getElementById('q').value;const o=document.getElementById('out');
-  o.innerHTML='<div class="msg">Buscando...</div>';
-  const r=await fetch('/search?q='+encodeURIComponent(q));const j=await r.json();
-  render(j,'Resultados');
-}
-async function doMix(){
-  const q=document.getElementById('mixurl').value;const o=document.getElementById('out');
-  o.innerHTML='<div class="msg">Listando mix...</div>';
-  const r=await fetch('/mix?q='+encodeURIComponent(q));const j=await r.json();
-  render(j,'Canciones del mix');
+  const mix=isMix(q);
+  o.innerHTML='<div class="msg">'+(mix?'Listando mix...':'Buscando...')+'</div>';
+  const endpoint=mix?'/mix':'/search';
+  const r=await fetch(endpoint+'?q='+encodeURIComponent(q));const j=await r.json();
+  render(j,mix?'Canciones del mix':'Resultados');
 }
 async function doLoad(id,deck){
   const o=document.getElementById('out');
