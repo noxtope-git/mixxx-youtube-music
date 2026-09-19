@@ -288,21 +288,48 @@ def _is_playlist_url(text: str) -> bool:
     return "list=" in text or "/playlist?" in text or "/sets/" in text
 
 
-def playlist_video_ids(identifier: str) -> list:
-    """Return the list of video IDs in a playlist/mix."""
+def mix_tracks(identifier: str, limit: int = 0) -> list:
+    """Return the list of tracks (id, title, artist, duration) in a playlist/mix.
+
+    Works with YouTube Music playlists, personal playlists AND the
+    auto-generated "Mix - ..." / radio playlists made by YouTube.
+    """
     if not identifier.startswith(("http://", "https://")):
-        # Bare playlist ID (e.g. from `mix list`) -> build a YouTube Music URL.
+        # Bare playlist ID -> build a YouTube Music URL.
         identifier = f"https://music.youtube.com/playlist?list={identifier}"
+
+    # YouTube "Mix"/radio lists (list=RD<id>) are only reachable via the watch
+    # URL. Convert "playlist?list=RD<id>" -> "watch?v=<id>&list=RD<id>".
+    m = re.search(r"list=(RD[A-Za-z0-9_-]{11})", identifier)
+    if m and "watch?" not in identifier:
+        vid = m.group(1)[2:]
+        identifier = f"https://www.youtube.com/watch?v={vid}&list={m.group(1)}"
+
     opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(identifier, download=False)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(identifier, download=False)
+    except yt_dlp.utils.DownloadError:
+        return []
     entries = info.get("entries") or []
-    return [e.get("id") for e in entries if e and e.get("id")]
+    out = []
+    for e in entries:
+        if not e or not e.get("id"):
+            continue
+        out.append({
+            "id": e.get("id"),
+            "title": e.get("title") or "Unknown",
+            "artist": e.get("channel") or e.get("uploader") or "",
+            "duration": e.get("duration"),
+        })
+        if limit and len(out) >= limit:
+            break
+    return out
 
 
 def list_personal_playlists(limit: int = 50) -> list:
@@ -339,21 +366,21 @@ def write_tracks_command(tracks: list, command_file: Optional[Path] = None) -> P
 
 def mix(identifier: str, start_deck: int = 1, limit: int = 0) -> Optional[list]:
     """Download every track of a playlist/mix and queue them into decks."""
-    ids = playlist_video_ids(identifier)
+    tracks = mix_tracks(identifier)
     if limit > 0:
-        ids = ids[:limit]
-    if not ids:
+        tracks = tracks[:limit]
+    if not tracks:
         return None
-    tracks = []
+    commands = []
     infos = []
-    for i, vid in enumerate(ids):
-        info = download(vid)
+    for i, t in enumerate(tracks):
+        info = download(t["id"])
         if not info:
             continue
-        tracks.append({"path": info["path"], "group": _deck_group(start_deck + i)})
+        commands.append({"path": info["path"], "group": _deck_group(start_deck + i)})
         infos.append(info)
-    if tracks:
-        write_tracks_command(tracks)
+    if commands:
+        write_tracks_command(commands)
     return infos
 
 
@@ -453,25 +480,66 @@ def cmd_cache(args) -> int:
 _HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>ytmixx</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
-input,button{font-size:1rem;padding:.5rem}input{width:70%}button{width:25%;background:#f90;border:0;color:#111;cursor:pointer}
-.result{display:flex;justify-content:space-between;align-items:center;padding:.5rem;border-bottom:1px solid #333}
-.result .meta{flex:1}.result button{margin-left:1rem;width:auto}
-a{color:#f90}</style></head>
-<body><h1>ytmixx &mdash; YouTube Music</h1>
-<input id="q" placeholder="Buscar..."><button onclick="doSearch()">Buscar</button>
+body{font-family:system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
+input,button{font-size:1rem;padding:.5rem;border-radius:4px;border:0}
+input{width:100%;box-sizing:border-box;background:#222;color:#eee;margin:.3rem 0}
+.btn{background:#f90;color:#111;cursor:pointer;font-weight:bold}
+.deck1{background:#e91e63;color:#fff;cursor:pointer}
+.deck2{background:#2196f3;color:#fff;cursor:pointer}
+.box{display:flex;gap:.4rem;margin:.3rem 0}.box button{white-space:nowrap}
+h3{color:#f90;margin:.5rem 0}
+.result{display:flex;justify-content:space-between;align-items:center;padding:.5rem;border-bottom:1px solid #333;gap:.5rem}
+.result .meta{flex:1;min-width:0}
+.result .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.result .actions{display:flex;gap:.3rem}
+.result .actions button{padding:.35rem .6rem}
+.msg{padding:.5rem;margin:.3rem 0}.ok{color:#0f0}.err{color:#f66}
+</style></head>
+<body>
+<h1>ytmixx &mdash; YouTube Music</h1>
+
+<div>
+<input id="q" placeholder="Buscar cancion...">
+<div class="box"><button class="btn" onclick="doSearch()">Buscar</button></div>
+</div>
+
+<div>
+<input id="mixurl" placeholder="URL de mix/playlist de YouTube (music.youtube.com/playlist?list=...)">
+<div class="box"><button class="btn" onclick="doMix()">Listar canciones del mix</button></div>
+</div>
+
 <div id="out"></div>
+
 <script>
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function row(x){
+  return `<div class="result"><div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small></div>
+    <div class="actions"><button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
+    <button class="deck2" onclick="doLoad('${esc(x.id)}',2)">Deck 2</button></div></div>`;
+}
+function render(j,label){
+  const o=document.getElementById('out');
+  if(!Array.isArray(j)||j.length===0){o.innerHTML='<div class="msg err">Sin resultados</div>';return;}
+  o.innerHTML=`<h3>${label} (${j.length})</h3>`+j.map(row).join('');
+}
 async function doSearch(){
   const q=document.getElementById('q').value;const o=document.getElementById('out');
-  o.innerHTML='Buscando...';
+  o.innerHTML='<div class="msg">Buscando...</div>';
   const r=await fetch('/search?q='+encodeURIComponent(q));const j=await r.json();
-  o.innerHTML=j.map((x,i)=>`<div class="result"><div class="meta"><b>${x.title}</b><br><small>${x.artist} (${x.duration})</small></div>
-    <button onclick="doLoad(${i},'${x.id}')">Cargar deck 1</button></div>`).join('')||'Sin resultados';
+  render(j,'Resultados');
 }
-async function doLoad(i,id){const o=document.getElementById('out');
-  const r=await fetch('/load?q='+encodeURIComponent(id));const j=await r.json();
-  o.insertAdjacentHTML('afterbegin',`<div style="color:#0f0">OK: ${j.title} - ${j.artist}</div>`);}
+async function doMix(){
+  const q=document.getElementById('mixurl').value;const o=document.getElementById('out');
+  o.innerHTML='<div class="msg">Listando mix...</div>';
+  const r=await fetch('/mix?q='+encodeURIComponent(q));const j=await r.json();
+  render(j,'Canciones del mix');
+}
+async function doLoad(id,deck){
+  const o=document.getElementById('out');
+  const r=await fetch('/load?q='+encodeURIComponent(id)+'&deck='+deck);const j=await r.json();
+  if(j.error){o.insertAdjacentHTML('afterbegin','<div class="msg err">Error al descargar</div>');return;}
+  o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}: ${esc(j.title)} - ${esc(j.artist)}</div>`);
+}
 </script></body></html>"""
 
 
@@ -502,9 +570,16 @@ class _Handler(BaseHTTPRequestHandler):
                 "id": r["id"], "title": r["title"], "artist": r["artist"],
                 "duration": _fmt_dur(r.get("duration")),
             } for r in search(q)])
+        elif parsed.path == "/mix":
+            q = parse_qs(parsed.query).get("q", [""])[0]
+            self._json([{
+                "id": r["id"], "title": r["title"], "artist": r["artist"],
+                "duration": _fmt_dur(r.get("duration")),
+            } for r in mix_tracks(q, limit=100)])
         elif parsed.path == "/load":
             q = parse_qs(parsed.query).get("q", [""])[0]
-            info = load(q, deck=1, autoplay=False)
+            deck = int(parse_qs(parsed.query).get("deck", ["1"])[0])
+            info = load(q, deck=deck, autoplay=False)
             self._json(info or {"error": "download failed"})
         else:
             self.send_response(404)
