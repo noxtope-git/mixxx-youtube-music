@@ -778,7 +778,7 @@ select{flex:1;background:#222;color:#eee}
 </div>
 
 <script>
-var curQuery='',curLimit=10,curMix=false,lastCount=0;
+var curQuery='',curLimit=10,curMix=false,lastCount=0,curTracks=[],curPlaylistName='';
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function isMix(q){
   q=q.trim();
@@ -870,9 +870,11 @@ async function doLoad(id,deck){
   if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
   o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}: ${esc(j.title)} - ${esc(j.artist)}</div>`);
 }
-async function doLoadFile(path,deck){
+async function doLoadFile(i,deck){
+  const t=curTracks[i];
+  if(!t)return;
   const o=document.getElementById('playlists');
-  const r=await fetch('/loadfile?path='+encodeURIComponent(path)+'&deck='+deck);const j=await r.json();
+  const r=await fetch('/loadfile?path='+encodeURIComponent(t.path)+'&deck='+deck);const j=await r.json();
   if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
   o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}</div>`);
 }
@@ -917,24 +919,27 @@ async function doSave(id){
   loadPlaylists();
 }
 async function viewPlaylist(name){
+  curPlaylistName=name;
   const r=await fetch('/playlist?name='+encodeURIComponent(name));
   const j=await r.json();
+  curTracks=Array.isArray(j)?j:[];
   const o=document.getElementById('playlists');
-  if(!Array.isArray(j)||j.length===0){o.innerHTML=`<div class="plhead">${esc(name)}</div><div class="msg">Vacia</div>`;return;}
-  o.innerHTML=`<div class="plhead">${esc(name)} (${j.length})</div>`+j.map(t=>{
+  if(curTracks.length===0){o.innerHTML=`<div class="plhead">${esc(name)}</div><div class="msg">Vacia</div>`;return;}
+  o.innerHTML=`<div class="plhead">${esc(name)} (${curTracks.length})</div>`+curTracks.map((t,i)=>{
     const bpm=t.bpm?Math.round(t.bpm):null;
-    const p=(t.path||'').replace(/\\/g,'/');
     return `<div class="track"><img class="thumb" src="${esc(t.thumbnail||'')}" alt="">
       <div class="meta"><b>${esc(t.title)}</b><small>${esc(t.artist)}${bpm?' - '+bpm+' BPM':''}</small></div>
-      <button class="deck1" onclick="doLoadFile('${esc(p)}',1)">D1</button>
-      <button class="deck2" onclick="doLoadFile('${esc(p)}',2)">D2</button>
-      <button class="btn" onclick="removeTrack('${esc(name)}','${esc(t.id)}')">Quitar</button></div>`;
+      <button class="deck1" onclick="doLoadFile(${i},1)">D1</button>
+      <button class="deck2" onclick="doLoadFile(${i},2)">D2</button>
+      <button class="btn" onclick="removeTrack(${i})">Quitar</button></div>`;
   }).join('');
 }
-async function removeTrack(name,id){
-  const r=await fetch('/playlist?name='+encodeURIComponent(name)+'&id='+encodeURIComponent(id),{method:'DELETE'});
+async function removeTrack(i){
+  const t=curTracks[i];
+  if(!t)return;
+  const r=await fetch('/playlist?name='+encodeURIComponent(curPlaylistName)+'&id='+encodeURIComponent(t.id),{method:'DELETE'});
   const j=await r.json();
-  if(j&&j.ok){viewPlaylist(name);loadPlaylists();}
+  if(j&&j.ok){viewPlaylist(curPlaylistName);loadPlaylists();}
 }
 checkStatus();
 setInterval(checkStatus,2000);
