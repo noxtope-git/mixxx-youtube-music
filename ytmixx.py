@@ -335,6 +335,9 @@ def download(identifier: str, embed: bool = True) -> Optional[dict]:
         "no_warnings": True,
         "noplaylist": True,
         "paths": {"home": str(cache)},
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 60,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -661,7 +664,7 @@ h3{color:#f90;margin:.5rem 0}
 <button id="moreBtn" class="btn" style="display:none;width:100%;margin:.5rem 0" onclick="doMore()">Mostrar mas</button>
 
 <script>
-var curQuery='',curLimit=10,curMix=false;
+var curQuery='',curLimit=10,curMix=false,lastCount=0;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function isMix(q){
   q=q.trim();
@@ -719,23 +722,33 @@ async function checkStatus(){
     }
   }catch(e){}
 }
-async function fetchResults(){
+async function fetchResults(showLoading){
   const o=document.getElementById('out');
   const endpoint=curMix?'/mix':'/search';
-  o.innerHTML='<div class="msg">'+(curMix?'Listando mix...':'Buscando...')+'</div>';
-  const r=await fetch(endpoint+'?q='+encodeURIComponent(curQuery)+'&limit='+curLimit);
-  const j=await r.json();
-  if(!Array.isArray(j)){o.innerHTML='<div class="msg err">'+(j.error||'Error')+'</div>';document.getElementById('moreBtn').style.display='none';return;}
+  if(showLoading){o.innerHTML='<div class="msg">'+(curMix?'Listando mix...':'Buscando...')+'</div>';}
+  let j;
+  try{
+    const r=await fetch(endpoint+'?q='+encodeURIComponent(curQuery)+'&limit='+curLimit);
+    j=await r.json();
+  }catch(e){j={error:'Error de red'};}
+  if(!Array.isArray(j)){
+    const msg='<div class="msg err">'+(j&&j.error?esc(j.error):'Error')+'</div>';
+    if(o.innerHTML.indexOf('result')===-1){o.innerHTML=msg;}else{o.insertAdjacentHTML('afterbegin',msg);}
+    document.getElementById('moreBtn').style.display='none';
+    return;
+  }
   render(j,curMix?'Canciones del mix':'Resultados');
-  document.getElementById('moreBtn').style.display=(j.length>=curLimit)?'block':'none';
+  const gotMore=(j.length>lastCount);
+  lastCount=j.length;
+  document.getElementById('moreBtn').style.display=gotMore?'block':'none';
 }
 async function doGo(){
   const q=document.getElementById('q').value;
   if(!q.trim())return;
-  curQuery=q;curLimit=10;curMix=isMix(q);
-  fetchResults();
+  curQuery=q;curLimit=10;curMix=isMix(q);lastCount=0;
+  fetchResults(true);
 }
-async function doMore(){curLimit+=10;fetchResults();}
+async function doMore(){curLimit+=10;fetchResults(false);}
 async function doLoad(id,deck){
   const o=document.getElementById('out');
   const r=await fetch('/load?q='+encodeURIComponent(id)+'&deck='+deck);const j=await r.json();
