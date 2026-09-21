@@ -1,68 +1,89 @@
 # Mixxx YouTube Music
 
-Puente e integración (opcional) para usar **YouTube Music** como fuente de
-pistas en [Mixxx](https://mixxx.org), el software de DJ libre. Permite buscar,
-descargar y cargar pistas y *mixes* de YouTube Music en los decks de Mixxx.
+Puente para usar **YouTube Music** como fuente de pistas en
+[Mixxx](https://mixxx.org). Busca, descarga y carga pistas y *mixes* de
+YouTube Music directamente en los decks de Mixxx, desde una **interfaz web**.
 
-## Componentes
-
-| Pieza | Tipo | Qué hace | ¿Recompilar Mixxx? |
-|-------|------|----------|--------------------|
-| `ytmixx.py` | Python | Buscar, descargar y pedir carga de pistas/mixes | No |
-| `src/library/externaltrackloader.{h,cpp}` | C++ | Vigila un archivo JSON y carga la pista en un deck | Sí |
-| `src/sources/soundsourceyoutubemusic.{h,cpp}` | C++ | Decodifica pistas `.ytmusic` de forma perezosa + arrastrar URLs | Sí |
-| `src/library/youtubemusic/youtubemusicfeature.{h,cpp}` | C++ | Buscar YouTube Music desde el buscador de Mixxx | Sí |
-
-> **Aviso legal y técnico.** YouTube Music no tiene API pública oficial para
-> esto y sus términos de servicio prohíben descargar/extraer audio fuera de su
-> app. Proyecto **personal/experimental**: úsalo solo con contenido que tengas
-> derecho a descargar, y ten en cuenta que puede romperse cuando YouTube cambie
-> sus endpoints. El código C++ es derivado de Mixxx (GPLv2).
+> **Aviso legal.** YouTube Music no tiene API pública oficial para esto y sus
+> términos de servicio prohíben descargar audio fuera de su app. Úsalo solo con
+> contenido que tengas derecho a descargar. El código C++ es derivado de Mixxx
+> (GPLv2).
 
 ---
 
-## 1. Puente Python (sin recompilar)
+## Qué necesitas
 
-### Instalación
+| Requisito | Para qué |
+|-----------|----------|
+| **Python 3.9+** | Ejecutar el puente |
+| **ffmpeg** | Decodificar audio / incrustar etiquetas / detectar BPM |
+| **Mixxx** | El programa de DJ (instalado o compilado) |
+
+---
+
+## Instalación (paso a paso)
+
+### 1. Instalar dependencias de Python
 
 ```powershell
+cd mixxx-youtube-music
 python -m pip install -r requirements.txt
+```
 
-# ffmpeg (necesario para incrustar etiquetas y algunos formatos)
+### 2. Instalar ffmpeg
+
+```powershell
 winget install --id Gyan.FFmpeg -e
 ```
 
-> `ytmusicapi` (búsqueda nativa y tus playlists de YouTube Music) necesita
-> autenticación. Ejecuta `ytmusicapi oauth` y sigue los pasos. Sin ello, se usa
-> la búsqueda de YouTube normal vía `yt-dlp`.
+> Después de instalar ffmpeg, **cierra y reabre la terminal** para que se
+> actualice el `PATH`.
 
-### Uso
+### 3. (Opcional) Autenticar YouTube Music
+
+Para búsqueda nativa y tus playlists personales:
 
 ```powershell
-# Buscar
-python ytmixx.py search "daft punk around the world"
-
-# Descargar y ver la ruta local
-python ytmixx.py get "daft punk around the world"
-
-# Descargar y cargar en el deck 2 con autoplay
-python ytmixx.py load "daft punk" --deck 2 --autoplay
-
-# Descargar una playlist/mix entera y cargarla en decks sucesivos
-python ytmixx.py mix "https://music.youtube.com/playlist?list=PL..." --start-deck 1
-
-# Listar tus playlists personales (requiere `ytmusicapi oauth`)
-python ytmixx.py mix list
-
-# Interfaz web local
-python ytmixx.py serve --port 8765
-
-# Caché
-python ytmixx.py cache
-python ytmixx.py cache --clear
+python -m pip install ytmusicapi
+ytmusicapi oauth
 ```
 
-### Configuración
+> Sin esto, la búsqueda usa YouTube normal vía `yt-dlp` (funciona igual).
+
+### 4. Arrancar la interfaz web
+
+```powershell
+python ytmixx.py serve --port 8765
+```
+
+Abre **http://127.0.0.1:8765** en tu navegador. Escribe una canción o pega la
+URL de un mix y aprieta Enter; cada resultado tiene botones **Deck 1 / Deck 2**,
+miniatura y (cuando esté analizada) su BPM, con filtro de BPM.
+
+### 5. (Necesario para que "Deck 1/2" cargue en Mixxx)
+
+Los botones de deck escriben un archivo de comandos que Mixxx solo entiende si
+tienes compilada la parte C++ (`ExternalTrackLoader`). Ver la sección
+"Integración C++" más abajo.
+
+**Sin la parte C++**: puedes usar `get` (descargar) y arrastrar el `.m4a` de la
+carpeta de descargas a un deck manualmente.
+
+---
+
+## Uso por línea de comandos
+
+```powershell
+python ytmixx.py search "daft punk"          # buscar
+python ytmixx.py get "daft punk"             # descargar y ver la ruta
+python ytmixx.py load "daft punk" --deck 1   # descargar + cargar en deck 1
+python ytmixx.py mix "<url-de-playlist>"     # descargar un mix entero
+python ytmixx.py mix list                    # tus playlists (necesita oauth)
+python ytmixx.py cache                       # ver caché
+python ytmixx.py cache --clear               # limpiar caché
+```
+
+### Configuración (variables de entorno)
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
@@ -71,78 +92,60 @@ python ytmixx.py cache --clear
 
 ---
 
-## 2. Integración completa (C++)
+## Integración C++ (opcional, para carga automática en decks)
 
-Requiere recompilar Mixxx. Los archivos nuevos están en `src/`; las
-modificaciones a archivos existentes de Mixxx están en `integration.patch`.
+Hace que los botones **Deck 1 / Deck 2** (y `load`/`mix`) carguen la pista
+directamente en Mixxx. Requiere recompilar Mixxx.
+
+### Archivos
+
+- `src/library/externaltrackloader.{h,cpp}` — vigila `youtube_load.json` y
+  llama a `slotLoadLocationToPlayer` (añade la pista a la biblioteca, la analiza
+  y la carga en el deck).
+- `src/sources/soundsourceyoutubemusic.{h,cpp}` — decodifica `.ytmusic`
+  (necesario para arrastrar URLs de YouTube a un deck).
+- `integration.patch` — cambios sobre archivos existentes de Mixxx.
 
 ### Pasos
 
-1. **Copia los archivos C++** a tu árbol de Mixxx:
+1. **Copia los archivos C++** a tu clon de Mixxx:
    ```
    src/library/externaltrackloader.{h,cpp}
-   src/library/youtubemusic/youtubemusicfeature.{h,cpp}
    src/sources/soundsourceyoutubemusic.{h,cpp}
    ```
-2. **Aplica el parche** que modifica `CMakeLists.txt`, `src/sources/soundsourceproxy.cpp`,
-   `src/coreservices.{h,cpp}`, `src/util/dnd.cpp` y `src/library/library.cpp`:
+2. **Aplica el parche**:
    ```powershell
    cd <tu-clon-de-mixxx>
    git apply integration.patch
    ```
-3. **Recompila Mixxx**. En Windows puedes usar el script incluido:
+3. **Recompila Mixxx**. En Windows usa el script incluido:
    ```powershell
    tools\build-youtube.bat
    ```
-   (requiere Visual Studio 2022 Build Tools, CMake y Ninja; ver comentarios del script).
-
-### Qué aporta cada pieza
-
-- **`ExternalTrackLoader`**: vigila `youtube_load.json` en la carpeta de
-  settings de Mixxx y, al detectar un cambio, llama a
-  `PlayerManager::slotLoadLocationToPlayer(...)`. Esto añade la pista a la
-  biblioteca, dispara su análisis (BPM/clave) y la carga en el deck. Soporta
-  una pista única o una lista `tracks` (mixes).
-
-- **`SoundSourceProviderYouTubeMusic`**: registra la extensión `.ytmusic`.
-  Un archivo `.ytmusic` es un *sidecar* (nombre = ID del vídeo, o archivo de
-  texto con la URL). Al abrirlo, descarga el audio con `yt-dlp` a una caché y
-  delega la decodificación en FFmpeg, manteniendo seek/loops/keylock.
-
-- **Arrastrar y soltar URLs**: con el parche aplicado, puedes **arrastrar un
-  enlace de YouTube / YouTube Music y soltarlo directamente en un deck**; Mixxx
-  crea el *sidecar* y lo carga de forma perezosa (`src/util/dnd.cpp`).
-
-- **Buscar desde el buscador de Mixxx**: el `YouTubeMusicFeature` añade una
-  entrada "YouTube Music" en la barra lateral de la biblioteca. Al escribir en
-  el buscador, consulta YouTube Music (vía `yt-dlp`) y muestra los resultados;
-  al cargar un resultado se crea el *sidecar* `.ytmusic` y se descarga al
-  reproducir.
+   (requiere Visual Studio 2022 Build Tools, CMake y Ninja; el script los
+   detecta y te avisa si faltan).
 
 ---
 
 ## Cómo encaja todo
 
 ```
-ytmixx.py search "..."           -> lista resultados
-ytmixx.py load "..." --deck 1    -> yt-dlp descarga m4a a la caché
-                                    escribe youtube_load.json (atómico)
-ytmixx.py mix "<playlist>"       -> descarga todas las pistas
-                                    escribe {"tracks":[...]} (decks sucesivos)
-
-ExternalTrackLoader (C++)        -> detecta el cambio del JSON
-                                    -> PlayerManager::slotLoadLocationToPlayer()
-SoundSourceYouTubeMusic (C++)    -> (opcional) decodifica .ytmusic bajo demanda
-dnd.cpp                          -> acepta URLs de YouTube arrastradas al deck
+Web UI (navegador)  ->  ytmixx.py serve
+  Buscar           ->  yt-dlp / ytmusicapi
+  Deck 1 / Deck 2  ->  descarga m4a + escribe youtube_load.json
+ExternalTrackLoader (C++)  ->  detecta el JSON -> carga la pista en el deck
+SoundSourceYouTubeMusic (C++) -> decodifica .ytmusic (arrastrar URLs)
 ```
 
 ## Solución de problemas
 
-- **`load` no carga nada**: verifica que `YTMIXX_COMMAND_FILE` apunta al mismo
-  `youtube_load.json` que vigila `ExternalTrackLoader` (en la carpeta de
-  settings de Mixxx).
-- **`ytmusicapi` da 401**: ejecuta `ytmusicapi oauth`; si no, usa el fallback de
-  búsqueda de YouTube.
-- **Descarga falla**: actualiza `python -m pip install -U yt-dlp`.
-- **El `.ytmusic` no decodifica**: comprueba que `ffmpeg` y `yt-dlp` están en el
-  `PATH` y que Mixxx se compiló con `__FFMPEG__`.
+- **`load` no carga nada**: comprueba que Mixxx esté abierto (el puente lo
+  detecta y te avisa) y que `YTMIXX_COMMAND_FILE` apunte al mismo
+  `youtube_load.json` que vigila `ExternalTrackLoader`.
+- **Los resultados no muestran BPM**: el BPM se calcula al **descargar** la
+  pista por primera vez; después queda en caché. YouTube no lo provee de
+  antemano.
+- **`ytmusicapi` da 401**: ejecuta `ytmusicapi oauth`.
+- **Descarga falla**: `python -m pip install -U yt-dlp`.
+- **No suena por los auriculares**: en Mixxx → Preferencias → Sonido, elige
+  WASAPI y tu dispositivo de salida (los Bluetooth suelen requerir 48000 Hz).

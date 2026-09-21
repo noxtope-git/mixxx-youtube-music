@@ -670,7 +670,7 @@ function isMix(q){
 function row(x){
   const bpm=x.bpm?Math.round(x.bpm):null;
   const badge=bpm?`<span class="bpm">${bpm} BPM</span>`:'<span class="bpm none">- BPM</span>';
-  return `<div class="result" data-bpm="${bpm??''}">
+  return `<div class="result" data-bpm="${bpm===null?'':bpm}">
     <img class="thumb" src="${esc(x.thumbnail||'')}" alt="">
     <div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small>${badge}</div>
     <div class="actions"><button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
@@ -683,9 +683,13 @@ function render(j,label){
   applyFilter();
 }
 function applyFilter(){
-  const min=parseFloat(document.getElementById('bpmMin').value)||0;
-  const max=parseFloat(document.getElementById('bpmMax').value)||999;
+  const minEl=document.getElementById('bpmMin').value;
+  const maxEl=document.getElementById('bpmMax').value;
+  const hasFilter=minEl!==''||maxEl!=='';
+  const min=parseFloat(minEl)||0;
+  const max=parseFloat(maxEl)||999;
   document.querySelectorAll('#out .result').forEach(el=>{
+    if(!hasFilter){el.style.display='';return;}
     const b=parseFloat(el.dataset.bpm);
     el.style.display=(!isNaN(b)&&b>=min&&b<=max)?'':'none';
   });
