@@ -520,6 +520,82 @@ def mix(identifier: str, start_deck: int = 1, limit: int = 0) -> Optional[list]:
 
 
 # --------------------------------------------------------------------------- #
+# Playlists (guardar canciones con su info + BPM)
+# --------------------------------------------------------------------------- #
+
+_playlists: Optional[dict] = None
+
+
+def _playlists_path() -> Path:
+    return _cache_dir() / "playlists.json"
+
+
+def _get_playlists() -> dict:
+    global _playlists
+    if _playlists is None:
+        p = _playlists_path()
+        if p.exists():
+            try:
+                _playlists = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                _playlists = {}
+        else:
+            _playlists = {}
+    return _playlists
+
+
+def _save_playlists() -> None:
+    try:
+        _playlists_path().write_text(
+                json.dumps(_get_playlists(), ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def list_playlists() -> list:
+    return [{"name": n, "count": len(t)}
+            for n, t in _get_playlists().items()]
+
+
+def get_playlist_tracks(name: str) -> list:
+    return _get_playlists().get(name, [])
+
+
+def add_track_to_playlist(name: str, track: dict) -> None:
+    pl = _get_playlists()
+    tracks = pl.setdefault(name, [])
+    # Replace any existing entry with the same video id.
+    pl[name] = [t for t in tracks if t.get("id") != track.get("id")]
+    pl[name].append(track)
+    _save_playlists()
+
+
+def remove_track_from_playlist(name: str, track_id: str) -> None:
+    pl = _get_playlists()
+    if name in pl:
+        pl[name] = [t for t in pl[name] if t.get("id") != track_id]
+        _save_playlists()
+
+
+def save_track_to_playlist(name: str, video_id: str) -> Optional[dict]:
+    """Download a track (with BPM) and store it in a playlist."""
+    info = download(video_id)
+    if not info:
+        return None
+    entry = {
+        "id": info.get("id"),
+        "title": info.get("title"),
+        "artist": info.get("artist"),
+        "duration": info.get("duration"),
+        "bpm": info.get("bpm"),
+        "thumbnail": info.get("thumbnail"),
+        "path": info.get("path"),
+    }
+    add_track_to_playlist(name, entry)
+    return entry
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -642,6 +718,17 @@ h3{color:#f90;margin:.5rem 0}
 .filter{display:flex;gap:.4rem;margin:.5rem 0;align-items:center}
 .filter input{width:80px;margin:0}
 .filter label{color:#aaa;font-size:.85rem}
+.filter select{flex:1;background:#222;color:#eee;padding:.5rem;border-radius:4px;border:0}
+.like{background:transparent;border:1px solid #f66;color:#f66;cursor:pointer;font-size:1rem;border-radius:4px;padding:.3rem .55rem}
+.like:hover{background:#f66;color:#fff}
+#playlists .plitem{margin:.3rem 0}
+#playlists h3{color:#f90}
+#playlists .track{display:flex;align-items:center;gap:.5rem;padding:.4rem;border-bottom:1px solid #333}
+#playlists .track .thumb{width:40px;height:40px;object-fit:cover;border-radius:3px;flex:0 0 40px}
+#playlists .track .meta{flex:1;min-width:0}
+#playlists .track .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem}
+#playlists .track .meta small{color:#aaa}
+#playlists .track button{padding:.25rem .5rem;font-size:.78rem}
 </style></head>
 <body>
 <h1>ytmixx &mdash; YouTube Music</h1>
@@ -660,8 +747,16 @@ h3{color:#f90;margin:.5rem 0}
   <button class="btn" onclick="clearFilter()">Limpiar</button>
 </div>
 
+<div class="filter">
+  <label>Guardar en:</label>
+  <select id="playlistSel"><option>Favoritos</option></select>
+  <button class="btn" onclick="newPlaylist()">+ Nueva</button>
+</div>
+
 <div id="out"></div>
 <button id="moreBtn" class="btn" style="display:none;width:100%;margin:.5rem 0" onclick="doMore()">Mostrar mas</button>
+
+<div id="playlists"></div>
 
 <script>
 var curQuery='',curLimit=10,curMix=false,lastCount=0;
@@ -680,7 +775,8 @@ function row(x){
   return `<div class="result" data-bpm="${bpm===null?'':bpm}">
     <img class="thumb" src="${esc(x.thumbnail||'')}" alt="">
     <div class="meta"><b>${esc(x.title)}</b><small>${esc(x.artist)} (${x.duration})</small>${badge}</div>
-    <div class="actions"><button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
+    <div class="actions"><button class="like" title="Guardar en playlist" onclick="doSave('${esc(x.id)}')">&#9829;</button>
+    <button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
     <button class="deck2" onclick="doLoad('${esc(x.id)}',2)">Deck 2</button></div></div>`;
 }
 function render(j,label){
@@ -755,8 +851,75 @@ async function doLoad(id,deck){
   if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
   o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}: ${esc(j.title)} - ${esc(j.artist)}</div>`);
 }
+async function doLoadFile(path,deck){
+  const o=document.getElementById('playlists');
+  const r=await fetch('/loadfile?path='+encodeURIComponent(path)+'&deck='+deck);const j=await r.json();
+  if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
+  o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}</div>`);
+}
+async function loadPlaylists(){
+  try{
+    const r=await fetch('/playlists');const j=await r.json();
+    const pls=j.playlists||[];
+    const sel=document.getElementById('playlistSel');
+    const cur=sel.value;
+    sel.innerHTML=pls.length?pls.map(p=>`<option value="${esc(p.name)}">${esc(p.name)} (${p.count})</option>`).join(''):'<option>Favoritos</option>';
+    if(cur){for(let i=0;i<sel.options.length;i++){if(sel.options[i].value===cur){sel.selectedIndex=i;break;}}}
+    renderPlaylists(pls);
+  }catch(e){}
+}
+function renderPlaylists(pls){
+  const o=document.getElementById('playlists');
+  if(!pls||pls.length===0){o.innerHTML='';return;}
+  o.innerHTML='<h3>Mis playlists</h3>'+pls.map(p=>`<div class="plitem"><button class="btn" onclick="viewPlaylist('${esc(p.name)}')">${esc(p.name)} (${p.count})</button></div>`).join('');
+}
+async function newPlaylist(){
+  const name=prompt('Nombre de la nueva playlist:');
+  if(!name||!name.trim())return;
+  const r=await fetch('/playlists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim()})});
+  const j=await r.json();
+  if(j.playlists){
+    const sel=document.getElementById('playlistSel');
+    sel.innerHTML=j.playlists.map(p=>`<option value="${esc(p.name)}">${esc(p.name)} (${p.count})</option>`).join('');
+    sel.value=name.trim();
+    renderPlaylists(j.playlists);
+  }
+}
+async function doSave(id){
+  const sel=document.getElementById('playlistSel');
+  const name=sel.value||'Favoritos';
+  const o=document.getElementById('out');
+  o.insertAdjacentHTML('afterbegin',`<div class="msg">Guardando en "${esc(name)}"... (descarga + BPM)</div>`);
+  const r=await fetch('/playlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,id:id})});
+  const j=await r.json();
+  if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
+  const bpm=j.bpm?Math.round(j.bpm)+' BPM':'sin BPM';
+  o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Guardado en "${esc(name)}": ${esc(j.title)} - ${esc(j.artist)} (${bpm})</div>`);
+  loadPlaylists();
+}
+async function viewPlaylist(name){
+  const r=await fetch('/playlist?name='+encodeURIComponent(name));
+  const j=await r.json();
+  const o=document.getElementById('playlists');
+  if(!Array.isArray(j)||j.length===0){o.innerHTML=`<h3>${esc(name)}</h3><div class="msg">Vacia</div>`;return;}
+  o.innerHTML=`<h3>${esc(name)} (${j.length})</h3>`+j.map(t=>{
+    const bpm=t.bpm?Math.round(t.bpm):null;
+    const p=(t.path||'').replace(/\\/g,'/');
+    return `<div class="track"><img class="thumb" src="${esc(t.thumbnail||'')}" alt="">
+      <div class="meta"><b>${esc(t.title)}</b><small>${esc(t.artist)}${bpm?' - '+bpm+' BPM':''}</small></div>
+      <button class="deck1" onclick="doLoadFile('${esc(p)}',1)">D1</button>
+      <button class="deck2" onclick="doLoadFile('${esc(p)}',2)">D2</button>
+      <button class="btn" onclick="removeTrack('${esc(name)}','${esc(t.id)}')">Quitar</button></div>`;
+  }).join('');
+}
+async function removeTrack(name,id){
+  const r=await fetch('/playlist?name='+encodeURIComponent(name)+'&id='+encodeURIComponent(id),{method:'DELETE'});
+  const j=await r.json();
+  if(j&&j.ok){viewPlaylist(name);loadPlaylists();}
+}
 checkStatus();
 setInterval(checkStatus,2000);
+loadPlaylists();
 </script></body></html>"""
 
 
@@ -815,6 +978,73 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             info = load(q, deck=deck, autoplay=False)
             self._json(info or {"error": "download failed"})
+        elif parsed.path == "/loadfile":
+            path = parse_qs(parsed.query).get("path", [""])[0]
+            deck = int(parse_qs(parsed.query).get("deck", ["1"])[0])
+            if not is_mixxx_running():
+                self._json({"error": "Mixxx no esta abierto"})
+                return
+            if not path:
+                self._json({"error": "falta path"})
+                return
+            write_load_command(path, deck=deck, autoplay=False)
+            self._json({"ok": True, "path": path})
+        elif parsed.path == "/playlists":
+            self._json({"playlists": list_playlists()})
+        elif parsed.path == "/playlist":
+            name = parse_qs(parsed.query).get("name", [""])[0]
+            self._json(get_playlist_tracks(name))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/playlists":
+            body = self._read_body()
+            name = (body.get("name") or "").strip()
+            if not name:
+                self._json({"error": "falta name"})
+                return
+            _get_playlists().setdefault(name, [])
+            _save_playlists()
+            self._json({"playlists": list_playlists()})
+        elif parsed.path == "/playlist":
+            if not is_mixxx_running():
+                self._json({"error": "Mixxx no esta abierto"})
+                return
+            body = self._read_body()
+            name = (body.get("name") or "Favoritos").strip()
+            video_id = (body.get("id") or "").strip()
+            if not video_id:
+                self._json({"error": "falta id"})
+                return
+            entry = save_track_to_playlist(name, video_id)
+            self._json(entry or {"error": "no se pudo descargar"})
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/playlist":
+            q = parse_qs(parsed.query)
+            name = q.get("name", [""])[0]
+            video_id = q.get("id", [""])[0]
+            if name and video_id:
+                remove_track_from_playlist(name, video_id)
+                self._json({"ok": True})
+                return
+            self._json({"error": "falta name o id"})
         else:
             self.send_response(404)
             self.end_headers()
