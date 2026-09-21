@@ -643,8 +643,10 @@ h3{color:#f90;margin:.5rem 0}
 <body>
 <h1>ytmixx &mdash; YouTube Music</h1>
 
-<input id="q" placeholder="Busca una cancion o pega la URL de un mix/playlist..." onkeydown="if(event.key==='Enter')doGo()">
-<div class="box"><button class="btn" onclick="doGo()">Buscar</button></div>
+<div id="status"></div>
+
+<input id="q" placeholder="Busca una cancion o pega la URL de un mix/playlist..." onkeydown="if(event.key==='Enter')doGo()" disabled>
+<div class="box"><button id="goBtn" class="btn" onclick="doGo()" disabled>Buscar</button></div>
 
 <div class="filter">
   <label>BPM:</label>
@@ -656,8 +658,10 @@ h3{color:#f90;margin:.5rem 0}
 </div>
 
 <div id="out"></div>
+<button id="moreBtn" class="btn" style="display:none;width:100%;margin:.5rem 0" onclick="doMore()">Mostrar mas</button>
 
 <script>
+var curQuery='',curLimit=10,curMix=false;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function isMix(q){
   q=q.trim();
@@ -700,20 +704,46 @@ function clearFilter(){
   document.getElementById('bpmMax').value='';
   applyFilter();
 }
-async function doGo(){
-  const q=document.getElementById('q').value;const o=document.getElementById('out');
-  const mix=isMix(q);
-  o.innerHTML='<div class="msg">'+(mix?'Listando mix...':'Buscando...')+'</div>';
-  const endpoint=mix?'/mix':'/search';
-  const r=await fetch(endpoint+'?q='+encodeURIComponent(q));const j=await r.json();
-  render(j,mix?'Canciones del mix':'Resultados');
+async function checkStatus(){
+  try{
+    const r=await fetch('/status');const s=await r.json();
+    const st=document.getElementById('status');
+    const inp=document.getElementById('q');
+    const btn=document.getElementById('goBtn');
+    if(s.mixxx){
+      st.innerHTML='<div class="msg ok">Mixxx conectado</div>';
+      inp.disabled=false;btn.disabled=false;
+    }else{
+      st.innerHTML='<div class="msg err">Abre Mixxx para poder buscar y cargar pistas</div>';
+      inp.disabled=true;btn.disabled=true;
+    }
+  }catch(e){}
 }
+async function fetchResults(){
+  const o=document.getElementById('out');
+  const endpoint=curMix?'/mix':'/search';
+  o.innerHTML='<div class="msg">'+(curMix?'Listando mix...':'Buscando...')+'</div>';
+  const r=await fetch(endpoint+'?q='+encodeURIComponent(curQuery)+'&limit='+curLimit);
+  const j=await r.json();
+  if(!Array.isArray(j)){o.innerHTML='<div class="msg err">'+(j.error||'Error')+'</div>';document.getElementById('moreBtn').style.display='none';return;}
+  render(j,curMix?'Canciones del mix':'Resultados');
+  document.getElementById('moreBtn').style.display=(j.length>=curLimit)?'block':'none';
+}
+async function doGo(){
+  const q=document.getElementById('q').value;
+  if(!q.trim())return;
+  curQuery=q;curLimit=10;curMix=isMix(q);
+  fetchResults();
+}
+async function doMore(){curLimit+=10;fetchResults();}
 async function doLoad(id,deck){
   const o=document.getElementById('out');
   const r=await fetch('/load?q='+encodeURIComponent(id)+'&deck='+deck);const j=await r.json();
   if(j.error){o.insertAdjacentHTML('afterbegin',`<div class="msg err">${esc(j.error)}</div>`);return;}
   o.insertAdjacentHTML('afterbegin',`<div class="msg ok">Cargando en Deck ${deck}: ${esc(j.title)} - ${esc(j.artist)}</div>`);
 }
+checkStatus();
+setInterval(checkStatus,2000);
 </script></body></html>"""
 
 
@@ -738,22 +768,32 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif parsed.path == "/status":
+            self._json({"mixxx": is_mixxx_running()})
         elif parsed.path == "/search":
             q = parse_qs(parsed.query).get("q", [""])[0]
+            limit = int(parse_qs(parsed.query).get("limit", ["10"])[0])
+            if not is_mixxx_running():
+                self._json({"error": "Mixxx no esta abierto"})
+                return
             self._json([{
                 "id": r["id"], "title": r["title"], "artist": r["artist"],
                 "duration": _fmt_dur(r.get("duration")),
                 "bpm": get_cached_bpm(r["id"]),
                 "thumbnail": _thumbnail_url(r["id"]),
-            } for r in search(q)])
+            } for r in search(q, limit=limit)])
         elif parsed.path == "/mix":
             q = parse_qs(parsed.query).get("q", [""])[0]
+            limit = int(parse_qs(parsed.query).get("limit", ["50"])[0])
+            if not is_mixxx_running():
+                self._json({"error": "Mixxx no esta abierto"})
+                return
             self._json([{
                 "id": r["id"], "title": r["title"], "artist": r["artist"],
                 "duration": _fmt_dur(r.get("duration")),
                 "bpm": get_cached_bpm(r["id"]),
                 "thumbnail": _thumbnail_url(r["id"]),
-            } for r in mix_tracks(q, limit=100)])
+            } for r in mix_tracks(q, limit=limit)])
         elif parsed.path == "/load":
             q = parse_qs(parsed.query).get("q", [""])[0]
             deck = int(parse_qs(parsed.query).get("deck", ["1"])[0])
