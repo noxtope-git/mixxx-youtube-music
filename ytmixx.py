@@ -697,66 +697,85 @@ def cmd_cache(args) -> int:
 _HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>ytmixx</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
-input,button{font-size:1rem;padding:.5rem;border-radius:4px;border:0}
+body{font-family:system-ui,sans-serif;max-width:720px;margin:1.5rem auto;padding:0 1rem;background:#111;color:#eee}
+h1{font-size:1.4rem;margin:.3rem 0;color:#f90}
+.banner{padding:.7rem 1rem;border-radius:6px;margin:.6rem 0;font-weight:bold;text-align:center;font-size:1rem}
+.banner.on{background:#0a7a33;color:#fff}
+.banner.off{background:#b33030;color:#fff}
+.section{margin:1rem 0}
+.section h2{font-size:1rem;color:#f90;border-bottom:1px solid #333;padding-bottom:.2rem;margin:.4rem 0}
+input,select,button{font-size:.95rem;padding:.5rem;border-radius:4px;border:0}
 input{width:100%;box-sizing:border-box;background:#222;color:#eee;margin:.3rem 0}
+select{flex:1;background:#222;color:#eee}
 .btn{background:#f90;color:#111;cursor:pointer;font-weight:bold}
 .deck1{background:#e91e63;color:#fff;cursor:pointer}
 .deck2{background:#2196f3;color:#fff;cursor:pointer}
 .box{display:flex;gap:.4rem;margin:.3rem 0}.box button{white-space:nowrap}
-h3{color:#f90;margin:.5rem 0}
+.filter{display:flex;gap:.4rem;margin:.4rem 0;align-items:center}
+.filter input{width:75px;margin:0}
+.filter label{color:#aaa;font-size:.85rem;white-space:nowrap}
 .result{display:flex;justify-content:space-between;align-items:center;padding:.5rem;border-bottom:1px solid #333;gap:.5rem}
-.result .thumb{width:64px;height:64px;object-fit:cover;border-radius:4px;flex:0 0 64px}
+.result .thumb{width:56px;height:56px;object-fit:cover;border-radius:4px;flex:0 0 56px}
 .result .meta{flex:1;min-width:0}
-.result .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.result .meta small{color:#aaa}
-.result .bpm{display:inline-block;margin-top:3px;padding:1px 6px;border-radius:3px;background:#333;color:#9cf;font-size:.8rem;font-weight:bold}
+.result .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.95rem}
+.result .meta small{color:#aaa;font-size:.8rem}
+.result .bpm{display:inline-block;margin-top:2px;padding:1px 6px;border-radius:3px;background:#333;color:#9cf;font-size:.75rem;font-weight:bold}
 .result .bpm.none{color:#666}
 .result .actions{display:flex;gap:.3rem}
-.result .actions button{padding:.35rem .6rem}
-.msg{padding:.5rem;margin:.3rem 0}.ok{color:#0f0}.err{color:#f66}
-.filter{display:flex;gap:.4rem;margin:.5rem 0;align-items:center}
-.filter input{width:80px;margin:0}
-.filter label{color:#aaa;font-size:.85rem}
-.filter select{flex:1;background:#222;color:#eee;padding:.5rem;border-radius:4px;border:0}
-.like{background:transparent;border:1px solid #f66;color:#f66;cursor:pointer;font-size:1rem;border-radius:4px;padding:.3rem .55rem}
+.result .actions button{padding:.3rem .5rem}
+.like{background:transparent;border:1px solid #f66;color:#f66;cursor:pointer;font-size:1rem;border-radius:4px;padding:.3rem .5rem}
 .like:hover{background:#f66;color:#fff}
+.msg{padding:.5rem;margin:.3rem 0;border-radius:4px}
+.msg.ok{color:#0f0}.msg.err{color:#f66}
+.count{color:#aaa;font-size:.85rem;margin:.3rem 0}
+.plhead{color:#f90;font-weight:bold;margin:.4rem 0}
+#moreBtn{width:100%;margin:.4rem 0}
 #playlists .plitem{margin:.3rem 0}
-#playlists h3{color:#f90}
 #playlists .track{display:flex;align-items:center;gap:.5rem;padding:.4rem;border-bottom:1px solid #333}
 #playlists .track .thumb{width:40px;height:40px;object-fit:cover;border-radius:3px;flex:0 0 40px}
 #playlists .track .meta{flex:1;min-width:0}
 #playlists .track .meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem}
-#playlists .track .meta small{color:#aaa}
-#playlists .track button{padding:.25rem .5rem;font-size:.78rem}
+#playlists .track .meta small{color:#aaa;font-size:.78rem}
+#playlists .track button{padding:.25rem .5rem;font-size:.75rem}
 </style></head>
 <body>
 <h1>ytmixx &mdash; YouTube Music</h1>
 
-<div id="status"></div>
+<div id="status" class="banner off">Verificando Mixxx...</div>
 
-<input id="q" placeholder="Busca una cancion o pega la URL de un mix/playlist..." onkeydown="if(event.key==='Enter')doGo()" disabled>
-<div class="box"><button id="goBtn" class="btn" onclick="doGo()" disabled>Buscar</button></div>
-
-<div class="filter">
-  <label>BPM:</label>
-  <input id="bpmMin" type="number" placeholder="min">
-  <label>-</label>
-  <input id="bpmMax" type="number" placeholder="max">
-  <button class="btn" onclick="doFilter()">Filtrar</button>
-  <button class="btn" onclick="clearFilter()">Limpiar</button>
+<div class="section">
+  <h2>Buscar</h2>
+  <input id="q" placeholder="Cancion o URL de mix/playlist..." onkeydown="if(event.key==='Enter')doGo()" disabled>
+  <div class="box"><button id="goBtn" class="btn" onclick="doGo()" disabled>Buscar</button></div>
 </div>
 
-<div class="filter">
-  <label>Guardar en:</label>
-  <select id="playlistSel"><option>Favoritos</option></select>
-  <button class="btn" onclick="newPlaylist()">+ Nueva</button>
+<div class="section">
+  <h2>Filtros</h2>
+  <div class="filter">
+    <label>BPM</label>
+    <input id="bpmMin" type="number" placeholder="min">
+    <label>-</label>
+    <input id="bpmMax" type="number" placeholder="max">
+    <button class="btn" onclick="doFilter()">Filtrar</button>
+    <button class="btn" onclick="clearFilter()">Limpiar</button>
+  </div>
+  <div class="filter">
+    <label>Guardar en</label>
+    <select id="playlistSel"><option>Favoritos</option></select>
+    <button class="btn" onclick="newPlaylist()">+ Nueva</button>
+  </div>
 </div>
 
-<div id="out"></div>
-<button id="moreBtn" class="btn" style="display:none;width:100%;margin:.5rem 0" onclick="doMore()">Mostrar mas</button>
+<div class="section">
+  <h2>Resultados</h2>
+  <div id="out"></div>
+  <button id="moreBtn" class="btn" style="display:none" onclick="doMore()">Mostrar mas</button>
+</div>
 
-<div id="playlists"></div>
+<div class="section">
+  <h2>Mis playlists</h2>
+  <div id="playlists"></div>
+</div>
 
 <script>
 var curQuery='',curLimit=10,curMix=false,lastCount=0;
@@ -782,7 +801,7 @@ function row(x){
 function render(j,label){
   const o=document.getElementById('out');
   if(!Array.isArray(j)||j.length===0){o.innerHTML='<div class="msg err">Sin resultados</div>';return;}
-  o.innerHTML=`<h3>${label} (${j.length})</h3>`+j.map(row).join('');
+  o.innerHTML=`<div class="count">${j.length} resultados</div>`+j.map(row).join('');
   applyFilter();
 }
 function applyFilter(){
@@ -810,10 +829,10 @@ async function checkStatus(){
     const inp=document.getElementById('q');
     const btn=document.getElementById('goBtn');
     if(s.mixxx){
-      st.innerHTML='<div class="msg ok">Mixxx conectado</div>';
+      st.className='banner on';st.textContent='Mixxx conectado';
       inp.disabled=false;btn.disabled=false;
     }else{
-      st.innerHTML='<div class="msg err">Abre Mixxx para poder buscar y cargar pistas</div>';
+      st.className='banner off';st.textContent='Abre Mixxx para buscar y cargar pistas';
       inp.disabled=true;btn.disabled=true;
     }
   }catch(e){}
@@ -870,8 +889,8 @@ async function loadPlaylists(){
 }
 function renderPlaylists(pls){
   const o=document.getElementById('playlists');
-  if(!pls||pls.length===0){o.innerHTML='';return;}
-  o.innerHTML='<h3>Mis playlists</h3>'+pls.map(p=>`<div class="plitem"><button class="btn" onclick="viewPlaylist('${esc(p.name)}')">${esc(p.name)} (${p.count})</button></div>`).join('');
+  if(!pls||pls.length===0){o.innerHTML='<div class="msg">Sin playlists aun</div>';return;}
+  o.innerHTML=pls.map(p=>`<div class="plitem"><button class="btn" onclick="viewPlaylist('${esc(p.name)}')">${esc(p.name)} (${p.count})</button></div>`).join('');
 }
 async function newPlaylist(){
   const name=prompt('Nombre de la nueva playlist:');
@@ -901,8 +920,8 @@ async function viewPlaylist(name){
   const r=await fetch('/playlist?name='+encodeURIComponent(name));
   const j=await r.json();
   const o=document.getElementById('playlists');
-  if(!Array.isArray(j)||j.length===0){o.innerHTML=`<h3>${esc(name)}</h3><div class="msg">Vacia</div>`;return;}
-  o.innerHTML=`<h3>${esc(name)} (${j.length})</h3>`+j.map(t=>{
+  if(!Array.isArray(j)||j.length===0){o.innerHTML=`<div class="plhead">${esc(name)}</div><div class="msg">Vacia</div>`;return;}
+  o.innerHTML=`<div class="plhead">${esc(name)} (${j.length})</div>`+j.map(t=>{
     const bpm=t.bpm?Math.round(t.bpm):null;
     const p=(t.path||'').replace(/\\/g,'/');
     return `<div class="track"><img class="thumb" src="${esc(t.thumbnail||'')}" alt="">
