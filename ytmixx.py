@@ -729,7 +729,7 @@ select{flex:1;background:#222;color:#eee}
 .msg.ok{color:#0f0}.msg.err{color:#f66}
 .count{color:#aaa;font-size:.85rem;margin:.3rem 0}
 .plhead{color:#f90;font-weight:bold;margin:.4rem 0}
-#moreBtn{width:100%;margin:.4rem 0}
+#moreBtn,#lessBtn{flex:1;margin:0}
 #playlists .plitem{margin:.3rem 0}
 #playlists .track{display:flex;align-items:center;gap:.5rem;padding:.4rem;border-bottom:1px solid #333}
 #playlists .track .thumb{width:40px;height:40px;object-fit:cover;border-radius:3px;flex:0 0 40px}
@@ -769,7 +769,10 @@ select{flex:1;background:#222;color:#eee}
 <div class="section">
   <h2>Resultados</h2>
   <div id="out"></div>
-  <button id="moreBtn" class="btn" style="display:none" onclick="doMore()">Mostrar mas</button>
+  <div class="box" style="margin:.4rem 0">
+    <button id="lessBtn" class="btn" style="display:none;flex:1" onclick="doLess()">Mostrar menos</button>
+    <button id="moreBtn" class="btn" style="display:none;flex:1" onclick="doMore()">Mostrar mas</button>
+  </div>
 </div>
 
 <div class="section">
@@ -778,7 +781,8 @@ select{flex:1;background:#222;color:#eee}
 </div>
 
 <script>
-var curQuery='',curLimit=10,curMix=false,lastCount=0,curTracks=[],curPlaylistName='';
+var curQuery='',curLimit=10,curMix=false,curTracks=[],curPlaylistName='';
+var allResults=[],visibleCount=10,MAX_RESULTS=400,STEP=25;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function isMix(q){
   q=q.trim();
@@ -798,11 +802,19 @@ function row(x){
     <button class="deck1" onclick="doLoad('${esc(x.id)}',1)">Deck 1</button>
     <button class="deck2" onclick="doLoad('${esc(x.id)}',2)">Deck 2</button></div></div>`;
 }
-function render(j,label){
+function renderSlice(){
   const o=document.getElementById('out');
-  if(!Array.isArray(j)||j.length===0){o.innerHTML='<div class="msg err">Sin resultados</div>';return;}
-  o.innerHTML=`<div class="count">${j.length} resultados</div>`+j.map(row).join('');
+  if(!allResults.length){o.innerHTML='<div class="msg err">Sin resultados</div>';updateMoreLess();return;}
+  const slice=allResults.slice(0,visibleCount);
+  o.innerHTML=`<div class="count">${slice.length} de ${allResults.length} resultados</div>`+slice.map(row).join('');
   applyFilter();
+  updateMoreLess();
+}
+function updateMoreLess(){
+  const canShowFromCache=visibleCount<allResults.length;
+  const canFetchMore=allResults.length>=curLimit&&curLimit<MAX_RESULTS;
+  document.getElementById('moreBtn').style.display=(canShowFromCache||canFetchMore)?'block':'none';
+  document.getElementById('lessBtn').style.display=(visibleCount>10)?'block':'none';
 }
 function applyFilter(){
   const minEl=document.getElementById('bpmMin').value;
@@ -848,22 +860,45 @@ async function fetchResults(showLoading){
   }catch(e){j={error:'Error de red'};}
   if(!Array.isArray(j)){
     const msg='<div class="msg err">'+(j&&j.error?esc(j.error):'Error')+'</div>';
-    if(o.innerHTML.indexOf('result')===-1){o.innerHTML=msg;}else{o.insertAdjacentHTML('afterbegin',msg);}
-    document.getElementById('moreBtn').style.display='none';
-    return;
+    if(!allResults.length){o.innerHTML=msg;}else{o.insertAdjacentHTML('afterbegin',msg);}
+    updateMoreLess();
+    return false;
   }
-  render(j,curMix?'Canciones del mix':'Resultados');
-  const gotMore=(j.length>lastCount);
-  lastCount=j.length;
-  document.getElementById('moreBtn').style.display=gotMore?'block':'none';
+  allResults=j;
+  renderSlice();
+  return true;
 }
 async function doGo(){
   const q=document.getElementById('q').value;
   if(!q.trim())return;
-  curQuery=q;curLimit=10;curMix=isMix(q);lastCount=0;
+  curQuery=q;curLimit=10;curMix=isMix(q);
+  allResults=[];visibleCount=10;
   fetchResults(true);
 }
-async function doMore(){curLimit+=10;fetchResults(false);}
+async function doMore(){
+  if(visibleCount<allResults.length){
+    visibleCount=Math.min(visibleCount+STEP,allResults.length);
+    renderSlice();
+    return;
+  }
+  if(curLimit>=MAX_RESULTS||!allResults.length){updateMoreLess();return;}
+  const more=document.getElementById('moreBtn');
+  const old=more.textContent;
+  more.textContent='Cargando mas...';more.disabled=true;
+  const prevLimit=curLimit;
+  curLimit=Math.min(curLimit+STEP,MAX_RESULTS);
+  const ok=await fetchResults(false);
+  more.textContent=old;more.disabled=false;
+  if(!ok){curLimit=prevLimit;updateMoreLess();return;}
+  if(visibleCount<allResults.length){
+    visibleCount=Math.min(visibleCount+STEP,allResults.length);
+    renderSlice();
+  }
+}
+function doLess(){
+  visibleCount=Math.max(10,visibleCount-STEP);
+  renderSlice();
+}
 async function doLoad(id,deck){
   const o=document.getElementById('out');
   const r=await fetch('/load?q='+encodeURIComponent(id)+'&deck='+deck);const j=await r.json();
@@ -972,7 +1007,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"mixxx": is_mixxx_running()})
         elif parsed.path == "/search":
             q = parse_qs(parsed.query).get("q", [""])[0]
-            limit = int(parse_qs(parsed.query).get("limit", ["10"])[0])
+            limit = min(int(parse_qs(parsed.query).get("limit", ["10"])[0]), 400)
             if not is_mixxx_running():
                 self._json({"error": "Mixxx no esta abierto"})
                 return
@@ -984,7 +1019,7 @@ class _Handler(BaseHTTPRequestHandler):
             } for r in search(q, limit=limit)])
         elif parsed.path == "/mix":
             q = parse_qs(parsed.query).get("q", [""])[0]
-            limit = int(parse_qs(parsed.query).get("limit", ["50"])[0])
+            limit = min(int(parse_qs(parsed.query).get("limit", ["50"])[0]), 400)
             if not is_mixxx_running():
                 self._json({"error": "Mixxx no esta abierto"})
                 return
